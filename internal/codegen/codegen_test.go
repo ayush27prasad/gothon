@@ -45,8 +45,8 @@ func TestUnsupported(t *testing.T) {
 	}
 }
 
-// TestGolden generates the client for testdata/py/typed.py and compares it with
-// internal/testgen/typed, which is compiled and exercised end to end.
+// TestGolden generates clients for fixtures in testdata/py and compares them with
+// internal/testgen, where they are compiled and exercised end to end.
 func TestGolden(t *testing.T) {
 	py := os.Getenv("GOTHON_TEST_PYTHON")
 	if py == "" {
@@ -61,27 +61,36 @@ func TestGolden(t *testing.T) {
 	}
 	dir, _ := filepath.Abs("../../testdata/py")
 	env := append(os.Environ(), "PYTHONPATH="+rt+string(os.PathListSeparator)+dir)
-	e, err := schema.Run(context.Background(), py, env, "typed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := Generate(e, Options{Module: "typed", Version: "v0.0.0-test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	golden := "../testgen/typed/typed.go"
-	if *update {
-		os.MkdirAll(filepath.Dir(golden), 0o755)
-		if err := os.WriteFile(golden, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("generated client differs from %s; run go test ./internal/codegen -update", golden)
+	for _, module := range []string{"typed", "configured"} {
+		t.Run(module, func(t *testing.T) {
+			if module == "configured" && exec.Command(py, "-c", "import pydantic_settings").Run() != nil {
+				t.Skip("pydantic-settings not installed")
+			}
+			e, err := schema.Run(context.Background(), py, env, module)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if module == "configured" && (len(e.Warnings) != 1 || !strings.Contains(e.Warnings[0], "'LEGACY_TOKEN'")) {
+				t.Fatalf("want one warning about LEGACY_TOKEN, got %q", e.Warnings)
+			}
+			got, err := Generate(e, Options{Module: module, Version: "v0.0.0-test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			golden := filepath.Join("..", "testgen", module, module+".go")
+			if *update {
+				os.MkdirAll(filepath.Dir(golden), 0o755)
+				if err := os.WriteFile(golden, got, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(golden)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("generated client differs from %s; run go test ./internal/codegen -update", golden)
+			}
+		})
 	}
 }

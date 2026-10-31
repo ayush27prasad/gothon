@@ -65,6 +65,7 @@ func TestHashKeepsFieldNamedTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := `
+import sys
 from pydantic import BaseModel
 from gothon import _registry
 from gothon._schema import export
@@ -76,7 +77,7 @@ def hash_for(t):
     _registry.tasks.clear()
     def f(d: Doc) -> None: ...
     _registry.tasks["f"] = _registry.Task(f, "f")
-    return export(_registry.tasks)["hash"]
+    return export(_registry.tasks, sys.modules[__name__])["hash"]
 
 assert hash_for(str) != hash_for(int), "type change of a field named title was ignored"
 `

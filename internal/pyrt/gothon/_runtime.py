@@ -81,7 +81,7 @@ def main() -> int:
         from . import _registry
 
         _ValidationError = ValidationError
-        importlib.import_module(module)
+        mod = importlib.import_module(module)
         if not _registry.tasks:
             raise RuntimeError(f"module {module!r} defines no @gothon.task functions")
     except BaseException as e:  # report every startup failure to Go before exiting
@@ -94,7 +94,7 @@ def main() -> int:
         try:
             from ._schema import export
 
-            info["schema_hash"] = export(tasks)["hash"]
+            info["schema_hash"] = export(tasks, mod)["hash"]
         except Exception as e:
             send(ERROR, _error("import", e))
             return 1

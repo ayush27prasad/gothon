@@ -41,6 +41,9 @@ func TestWorkflow(t *testing.T) {
 	if err := runAdd([]string{"greeter"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := runAdd([]string{"-settings", "svc"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := runAdd([]string{"json"}); err == nil {
 		t.Fatal("add json: want error for a standard library name")
 	}
@@ -56,6 +59,7 @@ import (
 	"fmt"
 
 	"example.com/app/internal/py/greeter"
+	"example.com/app/internal/py/svc"
 	"github.com/ayush27prasad/gothon"
 )
 
@@ -70,10 +74,22 @@ func main() {
 		panic(err)
 	}
 	fmt.Println(out.Message)
+
+	word := "Hi"
+	s, err := svc.Start(context.Background(), gothon.Config{Workers: 1}, svc.Settings{Greeting: &word})
+	if err != nil {
+		panic(err)
+	}
+	defer s.Close()
+	sout, err := s.Greet(context.Background(), svc.GreetIn{Name: "gopher"})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(sout.Message)
 }
 `), 0o644)
 	run(app, "go", "mod", "tidy")
-	if out := run(filepath.Join(app, "cmd", "demo"), "go", "run", "."); !strings.Contains(out, "Hello, gopher!") {
+	if out := run(filepath.Join(app, "cmd", "demo"), "go", "run", "."); !strings.Contains(out, "Hello, gopher!") || !strings.Contains(out, "Hi, gopher!") {
 		t.Fatalf("unexpected output: %s", out)
 	}
 }

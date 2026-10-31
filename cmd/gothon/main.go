@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	_ "embed"
@@ -16,7 +17,9 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"syscall"
 	"text/template"
+	"unsafe"
 
 	"github.com/ayush27prasad/gothon/internal/codegen"
 	"github.com/ayush27prasad/gothon/internal/project"
@@ -30,7 +33,8 @@ Usage:
   gothon init [-python-dir DIR] [-out DIR] [-python-version V]
                          set up gothon.json and a uv-managed Python project
   gothon sync            create or update the Python environment with uv
-  gothon add <module>    add a Python module and generate its Go client
+  gothon add [-settings] <module>
+                         add a Python module and generate its Go client
   gothon gen [-check] [module...]
                          regenerate Go clients from the Python type hints
   gothon version         print the gothon version
@@ -134,16 +138,8 @@ func runSync() error {
 // sync creates or updates the Python environment with uv, which also installs
 // the Python version the project asks for.
 func sync(root string, m *project.Manifest) error {
-	uv, err := exec.LookPath("uv")
-	if err != nil {
-		return errors.New(`gothon: uv is required to manage the Python environment. Install it with
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-or see https://docs.astral.sh/uv/getting-started/installation/, then run: gothon sync`)
-	}
-	cmd := exec.Command(uv, "sync", "--project", m.PythonDir(root))
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gothon: uv sync: %w", err)
+	if err := uvRun("sync", "--project", m.PythonDir(root)); err != nil {
+		return err
 	}
 
 	// Make `import gothon` resolve inside the venv, for editors and for running
@@ -164,6 +160,36 @@ or see https://docs.astral.sh/uv/getting-started/installation/, then run: gothon
 	return nil
 }
 
+// uvRun runs uv, which manages the Python environment and installs Python itself.
+func uvRun(args ...string) error {
+	uv, err := exec.LookPath("uv")
+	if err != nil {
+		return errors.New(`gothon: uv is required to manage the Python environment. Install it with
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+or see https://docs.astral.sh/uv/getting-started/installation/, then run: gothon sync`)
+	}
+	cmd := exec.Command(uv, args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gothon: uv %s: %w", args[0], err)
+	}
+	return nil
+}
+
+// isTerminal reports whether f is an interactive terminal (not a pipe or /dev/null).
+func isTerminal(f *os.File) bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), ioctlGetTermios, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
+}
+
+func ask(question string) bool {
+	fmt.Print(question)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes"
+}
+
 var moduleName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // reserved names would shadow gothon itself or be invalid as a Go package.
@@ -174,10 +200,13 @@ var reserved = []string{
 }
 
 func runAdd(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: gothon add <module>")
+	fs := flag.NewFlagSet("add", flag.ExitOnError)
+	withSettings := fs.Bool("settings", false, "include a pydantic-settings class for configuration such as API keys")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		return errors.New("usage: gothon add [-settings] <module>")
 	}
-	module := args[0]
+	module := fs.Arg(0)
 	if !moduleName.MatchString(module) || slices.Contains(reserved, module) {
 		return fmt.Errorf("gothon: %q is not a valid module name; use lowercase letters, digits and underscores", module)
 	}
@@ -196,7 +225,18 @@ func runAdd(args []string) error {
 	}
 
 	path := filepath.Join(m.PythonDir(root), module+".py")
-	if created, err := writeNew(path, render(moduleTmpl, map[string]string{"Module": module})); err != nil {
+	_, statErr := os.Stat(path)
+	isNew := errors.Is(statErr, os.ErrNotExist)
+	if isNew && !*withSettings && isTerminal(os.Stdin) {
+		*withSettings = ask(fmt.Sprintf("Does %s need settings such as API keys or URLs? [y/N] ", module))
+	}
+	if isNew && *withSettings {
+		if err := uvRun("add", "--project", m.PythonDir(root), "pydantic-settings"); err != nil {
+			return err
+		}
+	}
+	data := map[string]any{"Settings": *withSettings, "EnvPrefix": strings.ToUpper(module) + "_"}
+	if created, err := writeNew(path, render(moduleTmpl, data)); err != nil {
 		return err
 	} else if created {
 		fmt.Println("created", filepath.Join(m.Python, module+".py"))
@@ -213,6 +253,10 @@ func runAdd(args []string) error {
 
 	goMod, _ := goModulePath(root)
 	rel, _ := filepath.Rel(root, m.OutDir(root, module))
+	start := fmt.Sprintf("%s.Start(ctx, gothon.Config{})", module)
+	if *withSettings {
+		start = fmt.Sprintf("%s.Start(ctx, gothon.Config{}, %s.Settings{})", module, module)
+	}
 	fmt.Printf(`
 Next:
   - write tasks in %s
@@ -222,9 +266,16 @@ Next:
 Use it from Go:
   import %q
 
-  client, err := %s.Start(ctx, gothon.Config{})
+  client, err := %s
   defer client.Close()
-`, filepath.Join(m.Python, module+".py"), m.Python, goMod+"/"+filepath.ToSlash(rel), module)
+`, filepath.Join(m.Python, module+".py"), m.Python, goMod+"/"+filepath.ToSlash(rel), start)
+	if !*withSettings && isNew {
+		fmt.Printf(`
+Needs API keys or other configuration later? Add a pydantic-settings class to the
+module (uv add --project %s pydantic-settings) and run gothon gen. Go then gets a
+typed %s.Settings struct, and Start takes it.
+`, m.Python, module)
+	}
 	return nil
 }
 
@@ -261,6 +312,9 @@ func generate(root string, m *project.Manifest, python string, modules []string,
 		e, err := schema.Run(context.Background(), python, env, module)
 		if err != nil {
 			return err
+		}
+		for _, w := range e.Warnings {
+			fmt.Fprintln(os.Stderr, "warning:", w)
 		}
 		src, err := codegen.Generate(e, codegen.Options{Module: module, Version: version()})
 		if err != nil {

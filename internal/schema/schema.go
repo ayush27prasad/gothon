@@ -12,9 +12,26 @@ import (
 
 // Export is the output of `python -m gothon._schema <module>`.
 type Export struct {
-	Tasks []Task             `json:"tasks"`
-	Defs  map[string]*Schema `json:"defs"`
-	Hash  string             `json:"hash"`
+	Tasks    []Task             `json:"tasks"`
+	Settings []Settings         `json:"settings"`
+	Defs     map[string]*Schema `json:"defs"`
+	Hash     string             `json:"hash"`
+	Warnings []string           `json:"warnings"`
+}
+
+// Settings is a pydantic-settings class defined in the module.
+type Settings struct {
+	Name   string          `json:"name"`
+	Doc    string          `json:"doc"`
+	Fields []SettingsField `json:"fields"`
+}
+
+// SettingsField is one setting and the environment variable it is read from.
+type SettingsField struct {
+	Name     string  `json:"name"`
+	Env      string  `json:"env"`
+	Required bool    `json:"required"`
+	Schema   *Schema `json:"schema"`
 }
 
 // Task is one @gothon.task function.

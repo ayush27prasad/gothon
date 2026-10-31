@@ -16,7 +16,7 @@ const (
 	// Module is the Python module these tasks live in.
 	Module = "typed"
 	// SchemaHash identifies the task signatures this code was generated from.
-	SchemaHash = "06c05d5b3df9d01a"
+	SchemaHash = "4e38adecc711881c"
 )
 
 // Tasks is the set of tasks in "typed". Client implements it; fakes can too.
