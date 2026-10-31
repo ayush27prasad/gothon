@@ -137,8 +137,8 @@ func TestStartupErrors(t *testing.T) {
 		t.Fatalf("module without tasks: %#v", err)
 	}
 	_, err = Start(context.Background(), Config{Python: "/no/such/python", Module: "basic", Workers: 1})
-	if err == nil {
-		t.Fatal("missing interpreter: want error")
+	if err == nil || !strings.Contains(err.Error(), "gothon sync") {
+		t.Fatalf("missing interpreter: want a hint to run gothon sync, got %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -69,6 +70,9 @@ func startWorker(cfg *Config, env []string) (*worker, error) {
 	closeAll(reqR, respW, stdoutW, stderrW) // the child holds its own copies
 	if err != nil {
 		closeAll(reqW, respR, stdoutR, stderrR)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("gothon: python interpreter %q not found; run `gothon sync` to create the project environment: %w", cfg.Python, err)
+		}
 		return nil, fmt.Errorf("gothon: start %s: %w", cfg.Python, err)
 	}
 

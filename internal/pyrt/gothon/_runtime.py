@@ -68,7 +68,15 @@ def main() -> int:
 
     module = sys.argv[1]
     try:
-        from pydantic import ValidationError
+        if sys.version_info < (3, 10):
+            raise RuntimeError(f"gothon needs Python 3.10 or newer, {sys.executable} is {sys.version.split()[0]}")
+        try:
+            from pydantic import ValidationError
+        except ImportError:
+            raise RuntimeError(
+                f"pydantic is not installed for {sys.executable}; "
+                "add pydantic>=2.7 to the Python project (gothon init does this)"
+            ) from None
 
         from . import _registry
 
