@@ -26,3 +26,10 @@ func TestInstall(t *testing.T) {
 		t.Fatalf("want only the install dir under root, got %d entries", len(entries))
 	}
 }
+
+func TestDefaultRootOverride(t *testing.T) {
+	t.Setenv("GOTHON_CACHE_DIR", "/srv/cache")
+	if got := DefaultRoot(); got != "/srv/cache" {
+		t.Fatalf("DefaultRoot = %q", got)
+	}
+}

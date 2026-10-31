@@ -13,9 +13,12 @@ import (
 //go:embed gothon/*.py
 var files embed.FS
 
-// DefaultRoot is where the runtime is unpacked: the user cache directory, or the
-// temporary directory when there is none (e.g. no $HOME in a container).
+// DefaultRoot is where the runtime is unpacked: $GOTHON_CACHE_DIR if set, else the
+// user cache directory, else the temporary directory (e.g. no $HOME in a container).
 func DefaultRoot() string {
+	if dir := os.Getenv("GOTHON_CACHE_DIR"); dir != "" {
+		return dir
+	}
 	if dir, err := os.UserCacheDir(); err == nil {
 		return filepath.Join(dir, "gothon")
 	}
