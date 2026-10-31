@@ -1,0 +1,4 @@
+# Python packages for the integration tests. Pinned because the golden clients in
+# internal/testgen depend on pydantic's exact JSON Schema output.
+pydantic==2.14.2
+pydantic-settings==2.16.2

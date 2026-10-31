@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.23.x", stable]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Python test environment
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python -r testdata/requirements.txt
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        env:
+          GOTHON_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          GOTHON_TEST_CLI: "1"
+        run: go test -race ./...
