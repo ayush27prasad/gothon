@@ -23,14 +23,20 @@ import (
 	"time"
 
 	"github.com/ayush27prasad/gothon/internal/frame"
+	"github.com/ayush27prasad/gothon/internal/project"
 	"github.com/ayush27prasad/gothon/internal/pyrt"
 )
 
 // Config describes one pool of workers serving one Python module.
 type Config struct {
-	// Python is the interpreter, e.g. ".venv/bin/python". Default "python3".
+	// Root is the project directory holding gothon.json. If empty, $GOTHON_ROOT is
+	// used, then the nearest gothon.json at or above the working directory. The
+	// project supplies the defaults for Python and Dir.
+	Root string
+	// Python is the interpreter. Default: the project's .venv, else "python3".
 	Python string
 	// Dir is added to PYTHONPATH so Module can be imported from it.
+	// Default: the project's Python directory.
 	Dir string
 	// Module is the Python module that defines the tasks, e.g. "ner".
 	Module string
@@ -67,8 +73,8 @@ func Start(ctx context.Context, cfg Config) (*Pool, error) {
 	if cfg.Module == "" {
 		return nil, errors.New("gothon: Config.Module is required")
 	}
-	if cfg.Python == "" {
-		cfg.Python = "python3"
+	if err := cfg.fromProject(); err != nil {
+		return nil, err
 	}
 	if cfg.Workers <= 0 {
 		cfg.Workers = runtime.GOMAXPROCS(0)
@@ -333,6 +339,43 @@ func (p *Pool) isClosed() bool {
 	default:
 		return false
 	}
+}
+
+// fromProject fills Python and Dir from the project's gothon.json.
+func (cfg *Config) fromProject() error {
+	if cfg.Python != "" && cfg.Dir != "" {
+		return nil
+	}
+	root := cfg.Root
+	if root == "" {
+		root = os.Getenv("GOTHON_ROOT")
+	}
+	var m *project.Manifest
+	var err error
+	if root != "" {
+		m, err = project.Load(root)
+	} else if wd, wdErr := os.Getwd(); wdErr == nil {
+		root, m, err = project.Find(wd)
+		if errors.Is(err, project.ErrNotFound) {
+			// No project: plain library use.
+			if cfg.Python == "" {
+				cfg.Python = "python3"
+			}
+			return nil
+		}
+	} else {
+		err = wdErr
+	}
+	if err != nil {
+		return err
+	}
+	if cfg.Dir == "" {
+		cfg.Dir = m.PythonDir(root)
+	}
+	if cfg.Python == "" {
+		cfg.Python = m.VenvPython(root)
+	}
+	return nil
 }
 
 // runtimeRoot is where the embedded Python package is unpacked.

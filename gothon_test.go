@@ -7,11 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ayush27prasad/gothon/internal/project"
 )
 
 // testPython returns the interpreter for integration tests. Set GOTHON_TEST_PYTHON
@@ -270,5 +273,34 @@ func TestClose(t *testing.T) {
 	}
 	if err := p.Call(context.Background(), "pid", nil, nil); !errors.Is(err, ErrClosed) {
 		t.Fatalf("call after Close: want ErrClosed, got %v", err)
+	}
+}
+
+func TestProjectDefaults(t *testing.T) {
+	py := testPython(t)
+	root := t.TempDir()
+	pyDir, _ := filepath.Abs("testdata/py")
+	m := project.Default()
+	m.Python = pyDir
+	if err := m.Save(root); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dir comes from the project.
+	p, err := Start(context.Background(), Config{Root: root, Python: py, Module: "basic", Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+
+	// Python defaults to the project's venv, which does not exist yet.
+	_, err = Start(context.Background(), Config{Root: root, Module: "basic", Workers: 1})
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(pyDir, ".venv")) || !strings.Contains(err.Error(), "gothon sync") {
+		t.Fatalf("want missing-venv error with a hint, got %v", err)
+	}
+
+	// An explicit root without a manifest is an error.
+	if _, err := Start(context.Background(), Config{Root: t.TempDir(), Module: "basic"}); !errors.Is(err, project.ErrNotFound) {
+		t.Fatalf("want project.ErrNotFound, got %v", err)
 	}
 }
