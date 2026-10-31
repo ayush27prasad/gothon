@@ -13,6 +13,15 @@ import (
 //go:embed gothon/*.py
 var files embed.FS
 
+// DefaultRoot is where the runtime is unpacked: the user cache directory, or the
+// temporary directory when there is none (e.g. no $HOME in a container).
+func DefaultRoot() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "gothon")
+	}
+	return filepath.Join(os.TempDir(), "gothon")
+}
+
 // Install writes the embedded Python package under root and returns the directory
 // to put on PYTHONPATH. Each version of the files gets its own directory, written
 // to a temporary name and renamed into place, so concurrent processes and upgrades

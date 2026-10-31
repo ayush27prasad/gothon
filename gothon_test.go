@@ -314,7 +314,7 @@ func TestSchemaHash(t *testing.T) {
 		t.Fatalf("want ErrSchemaMismatch, got %v", err)
 	}
 
-	rt, _ := pyrt.Install(runtimeRoot())
+	rt, _ := pyrt.Install(pyrt.DefaultRoot())
 	dir, _ := filepath.Abs("testdata/py")
 	env := append(os.Environ(), "PYTHONPATH="+rt+string(os.PathListSeparator)+dir)
 	e, err := schema.Run(context.Background(), py, env, "basic")

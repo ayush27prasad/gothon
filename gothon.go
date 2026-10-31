@@ -96,7 +96,7 @@ func Start(ctx context.Context, cfg Config) (*Pool, error) {
 		cfg.Logger = slog.Default()
 	}
 
-	rt, err := pyrt.Install(runtimeRoot())
+	rt, err := pyrt.Install(pyrt.DefaultRoot())
 	if err != nil {
 		return nil, fmt.Errorf("gothon: install python runtime: %w", err)
 	}
@@ -386,12 +386,4 @@ func (cfg *Config) fromProject() error {
 		cfg.Python = m.VenvPython(root)
 	}
 	return nil
-}
-
-// runtimeRoot is where the embedded Python package is unpacked.
-func runtimeRoot() string {
-	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "gothon")
-	}
-	return filepath.Join(os.TempDir(), "gothon")
 }

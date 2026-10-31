@@ -1,0 +1,29 @@
+"""Tasks in this module are called from Go through the generated client.
+
+Conventions:
+- Mark each function Go calls with @gothon.task.
+- A task takes at most one argument. Annotate it and the return type, ideally
+  with pydantic models: they validate the data and become the Go types.
+- Load expensive things (models, clients) at module level. That runs once per
+  worker process, not once per call.
+- Add Python dependencies with `uv add --project <python dir> <package>`.
+- After changing a task or model, run `gothon gen` to update the Go client.
+"""
+
+from pydantic import BaseModel, Field
+
+import gothon
+
+
+class GreetIn(BaseModel):
+    name: str = Field(description="Who to greet.")
+
+
+class GreetOut(BaseModel):
+    message: str
+
+
+@gothon.task
+def greet(inp: GreetIn) -> GreetOut:
+    """Return a greeting for the given name."""
+    return GreetOut(message=f"Hello, {inp.name}!")
