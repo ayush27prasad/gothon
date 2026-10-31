@@ -89,7 +89,16 @@ def main() -> int:
         return 1
 
     tasks = _registry.tasks
-    send(READY, json.dumps({"protocol": PROTOCOL, "pid": os.getpid(), "tasks": sorted(tasks)}).encode())
+    info: dict[str, Any] = {"protocol": PROTOCOL, "pid": os.getpid(), "tasks": sorted(tasks)}
+    if os.environ.get("GOTHON_SCHEMA_HASH"):
+        try:
+            from ._schema import export
+
+            info["schema_hash"] = export(tasks)["hash"]
+        except Exception as e:
+            send(ERROR, _error("import", e))
+            return 1
+    send(READY, json.dumps(info).encode())
 
     while True:
         head = rin.read(5)

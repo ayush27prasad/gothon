@@ -11,6 +11,9 @@ var (
 	ErrClosed = errors.New("gothon: pool closed")
 	// ErrWorkerExited is returned when the worker process died while running a call.
 	ErrWorkerExited = errors.New("gothon: worker exited")
+	// ErrSchemaMismatch is returned by Start when the Python tasks no longer match
+	// the signatures the Go code was generated from.
+	ErrSchemaMismatch = errors.New("gothon: python tasks changed since the Go code was generated")
 )
 
 // Stages at which Python can fail, reported in PythonError.Stage.

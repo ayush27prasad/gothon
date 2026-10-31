@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/ayush27prasad/gothon/internal/project"
+	"github.com/ayush27prasad/gothon/internal/pyrt"
+	"github.com/ayush27prasad/gothon/internal/schema"
 )
 
 // testPython returns the interpreter for integration tests. Set GOTHON_TEST_PYTHON
@@ -302,5 +304,45 @@ func TestProjectDefaults(t *testing.T) {
 	// An explicit root without a manifest is an error.
 	if _, err := Start(context.Background(), Config{Root: t.TempDir(), Module: "basic"}); !errors.Is(err, project.ErrNotFound) {
 		t.Fatalf("want project.ErrNotFound, got %v", err)
+	}
+}
+
+func TestSchemaHash(t *testing.T) {
+	py := testPython(t)
+	cfg := Config{Python: py, Dir: "testdata/py", Module: "basic", Workers: 1, SchemaHash: "0000000000000000"}
+	if _, err := Start(context.Background(), cfg); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("want ErrSchemaMismatch, got %v", err)
+	}
+
+	rt, _ := pyrt.Install(runtimeRoot())
+	dir, _ := filepath.Abs("testdata/py")
+	env := append(os.Environ(), "PYTHONPATH="+rt+string(os.PathListSeparator)+dir)
+	e, err := schema.Run(context.Background(), py, env, "basic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SchemaHash = e.Hash
+	p, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+}
+
+func TestSettingsValidationAtImport(t *testing.T) {
+	_, err := Start(context.Background(), Config{Python: testPython(t), Dir: "testdata/py", Module: "needs_config", Workers: 1})
+	var pe *PythonError
+	if !errors.As(err, &pe) || pe.Stage != StageImport || len(pe.Fields) != 1 || pe.Fields[0].Loc[0] != "api_key" {
+		t.Fatalf("want import-stage validation error for api_key, got %#v", err)
+	}
+
+	p, err := Start(context.Background(), Config{Python: testPython(t), Dir: "testdata/py", Module: "needs_config", Workers: 1, Env: []string{"NEEDS_CONFIG_API_KEY=secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	var n int
+	if err := p.Call(context.Background(), "key_length", nil, &n); err != nil || n != 6 {
+		t.Fatalf("key_length = %d, %v", n, err)
 	}
 }

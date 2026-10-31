@@ -50,7 +50,14 @@ type Config struct {
 	Env []string
 	// Logger receives worker output and lifecycle events. Default slog.Default().
 	Logger *slog.Logger
+	// SchemaHash, if set, must match the hash of the module's task signatures.
+	// Generated clients set it, so Go types never silently drift from the Python models.
+	SchemaHash string
 }
+
+// SupportPackageIsVersion1 is referenced by generated code, which then fails to
+// compile against a version of this package too old to support it.
+const SupportPackageIsVersion1 = true
 
 // Pool runs calls on a fixed number of Python workers. It is safe for concurrent use.
 type Pool struct {
@@ -105,6 +112,9 @@ func Start(ctx context.Context, cfg Config) (*Pool, error) {
 		pythonPath = append(pythonPath, v)
 	}
 	env := append(os.Environ(), "PYTHONUNBUFFERED=1", "PYTHONFAULTHANDLER=1")
+	if cfg.SchemaHash != "" {
+		env = append(env, "GOTHON_SCHEMA_HASH=1")
+	}
 	env = append(env, cfg.Env...)
 	env = append(env, "PYTHONPATH="+strings.Join(pythonPath, string(os.PathListSeparator)))
 
@@ -278,7 +288,7 @@ func (p *Pool) spawn(ctx context.Context) (*worker, error) {
 
 	ready := make(chan struct{})
 	go p.watch(w, ready)
-	if err := w.awaitReady(ctx, p.cfg.StartTimeout, p.cfg.MaxFrame); err != nil {
+	if err := w.awaitReady(ctx, p.cfg.StartTimeout, p.cfg.MaxFrame, p.cfg.SchemaHash); err != nil {
 		w.kill()
 		return nil, err
 	}

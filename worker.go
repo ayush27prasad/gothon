@@ -128,7 +128,7 @@ func (w *worker) stderrTail() string {
 }
 
 // awaitReady waits until the worker has imported the module and reports in.
-func (w *worker) awaitReady(ctx context.Context, timeout time.Duration, maxFrame int) error {
+func (w *worker) awaitReady(ctx context.Context, timeout time.Duration, maxFrame int, schemaHash string) error {
 	w.out.SetReadDeadline(time.Now().Add(timeout))
 	stop := context.AfterFunc(ctx, w.interrupt)
 	kind, payload, err := frame.Read(w.r, maxFrame)
@@ -152,10 +152,14 @@ func (w *worker) awaitReady(ctx context.Context, timeout time.Duration, maxFrame
 		return fmt.Errorf("gothon: unexpected frame kind %d during startup", kind)
 	}
 	var info struct {
-		Protocol int `json:"protocol"`
+		Protocol   int    `json:"protocol"`
+		SchemaHash string `json:"schema_hash"`
 	}
 	if err := json.Unmarshal(payload, &info); err != nil || info.Protocol != protocolVersion {
 		return fmt.Errorf("gothon: worker speaks protocol %d, want %d", info.Protocol, protocolVersion)
+	}
+	if schemaHash != "" && info.SchemaHash != schemaHash {
+		return fmt.Errorf("%w (generated %s, module now %s); run `gothon gen`", ErrSchemaMismatch, schemaHash, info.SchemaHash)
 	}
 	return nil
 }
