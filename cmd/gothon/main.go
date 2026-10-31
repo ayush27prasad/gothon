@@ -144,7 +144,7 @@ func sync(root string, m *project.Manifest) error {
 
 	// Make `import gothon` resolve inside the venv, for editors and for running
 	// modules directly. At run time the library puts its own copy first.
-	rt, err := pyrt.Install(pyrt.DefaultRoot())
+	rt, err := pyrt.InstallDefault()
 	if err != nil {
 		return err
 	}
@@ -302,7 +302,7 @@ func runGen(args []string) error {
 }
 
 func generate(root string, m *project.Manifest, python string, modules []string, check bool) error {
-	rt, err := pyrt.Install(pyrt.DefaultRoot())
+	rt, err := pyrt.InstallDefault()
 	if err != nil {
 		return err
 	}

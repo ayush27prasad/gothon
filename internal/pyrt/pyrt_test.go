@@ -27,9 +27,21 @@ func TestInstall(t *testing.T) {
 	}
 }
 
-func TestDefaultRootOverride(t *testing.T) {
-	t.Setenv("GOTHON_CACHE_DIR", "/srv/cache")
-	if got := DefaultRoot(); got != "/srv/cache" {
-		t.Fatalf("DefaultRoot = %q", got)
+func TestInstallDefault(t *testing.T) {
+	override := t.TempDir()
+	t.Setenv("GOTHON_CACHE_DIR", override)
+	dir, err := InstallDefault()
+	if err != nil || filepath.Dir(dir) != override {
+		t.Fatalf("with GOTHON_CACHE_DIR: %q %v", dir, err)
+	}
+
+	// An unwritable cache directory falls back to the temporary directory.
+	t.Setenv("GOTHON_CACHE_DIR", "")
+	t.Setenv("HOME", "/nonexistent")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("TMPDIR", t.TempDir())
+	dir, err = InstallDefault()
+	if err != nil || filepath.Dir(filepath.Dir(dir)) != os.Getenv("TMPDIR") {
+		t.Fatalf("fallback: %q %v", dir, err)
 	}
 }

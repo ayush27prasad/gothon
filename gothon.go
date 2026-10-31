@@ -96,7 +96,7 @@ func Start(ctx context.Context, cfg Config) (*Pool, error) {
 		cfg.Logger = slog.Default()
 	}
 
-	rt, err := pyrt.Install(pyrt.DefaultRoot())
+	rt, err := pyrt.InstallDefault()
 	if err != nil {
 		return nil, fmt.Errorf("gothon: install python runtime: %w", err)
 	}

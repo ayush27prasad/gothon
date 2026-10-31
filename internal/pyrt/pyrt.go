@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,16 +15,27 @@ import (
 //go:embed gothon/*.py
 var files embed.FS
 
-// DefaultRoot is where the runtime is unpacked: $GOTHON_CACHE_DIR if set, else the
-// user cache directory, else the temporary directory (e.g. no $HOME in a container).
-func DefaultRoot() string {
+// InstallDefault installs the runtime in $GOTHON_CACHE_DIR if set; otherwise in the
+// user cache directory, falling back to the temporary directory when that is not
+// writable (no $HOME, or a read-only root filesystem in a container).
+func InstallDefault() (string, error) {
 	if dir := os.Getenv("GOTHON_CACHE_DIR"); dir != "" {
-		return dir
+		return Install(dir)
 	}
+	var roots []string
 	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "gothon")
+		roots = append(roots, filepath.Join(dir, "gothon"))
 	}
-	return filepath.Join(os.TempDir(), "gothon")
+	roots = append(roots, filepath.Join(os.TempDir(), "gothon"))
+	var errs []error
+	for _, root := range roots {
+		dir, err := Install(root)
+		if err == nil {
+			return dir, nil
+		}
+		errs = append(errs, err)
+	}
+	return "", fmt.Errorf("%w; set GOTHON_CACHE_DIR to a writable directory", errors.Join(errs...))
 }
 
 // Install writes the embedded Python package under root and returns the directory
