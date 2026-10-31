@@ -50,3 +50,39 @@ func TestRun(t *testing.T) {
 		t.Fatal("broken module: want error")
 	}
 }
+
+// A field named like a JSON Schema doc keyword must still count toward the hash.
+func TestHashKeepsFieldNamedTitle(t *testing.T) {
+	py := os.Getenv("GOTHON_TEST_PYTHON")
+	if py == "" {
+		py = "python3"
+	}
+	if exec.Command(py, "-c", "import pydantic").Run() != nil {
+		t.Skip("no python with pydantic (set GOTHON_TEST_PYTHON)")
+	}
+	rt, err := pyrt.Install(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `
+from pydantic import BaseModel
+from gothon import _registry
+from gothon._schema import export
+
+def hash_for(t):
+    class Doc(BaseModel):
+        title: t
+        description: str = "x"
+    _registry.tasks.clear()
+    def f(d: Doc) -> None: ...
+    _registry.tasks["f"] = _registry.Task(f, "f")
+    return export(_registry.tasks)["hash"]
+
+assert hash_for(str) != hash_for(int), "type change of a field named title was ignored"
+`
+	cmd := exec.Command(py, "-c", script)
+	cmd.Env = append(os.Environ(), "PYTHONPATH="+rt)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}

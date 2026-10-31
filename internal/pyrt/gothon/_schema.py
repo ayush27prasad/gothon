@@ -14,7 +14,8 @@ import sys
 from typing import Any
 
 REF = "#/$defs/{model}"
-_DOC_KEYS = {"title", "description", "examples"}
+_DOC_KEYS = {"title", "description", "examples", "doc"}
+_NAME_MAPS = {"properties", "$defs", "defs", "patternProperties"}
 
 
 def export(tasks: dict[str, Any]) -> dict[str, Any]:
@@ -40,8 +41,6 @@ def digest(export: dict[str, Any]) -> str:
     """Hash the shape of the signatures. Docs and titles are left out, so editing a
     docstring does not force regenerating Go code."""
     shape = _strip({"tasks": export["tasks"], "defs": export["defs"]})
-    for t in shape["tasks"]:
-        t.pop("doc", None)
     canonical = json.dumps(shape, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
@@ -63,9 +62,13 @@ def _merge(defs: dict[str, Any], name: str, schema: dict[str, Any]) -> None:
     defs[name] = schema
 
 
-def _strip(v: Any) -> Any:
+def _strip(v: Any, names: bool = False) -> Any:
+    """Drop documentation keywords. Keys of name maps (properties, defs) are field
+    and type names, which are kept even when they are called "title" or "doc"."""
     if isinstance(v, dict):
-        return {k: _strip(x) for k, x in v.items() if k not in _DOC_KEYS}
+        if names:
+            return {k: _strip(x) for k, x in v.items()}
+        return {k: _strip(x, k in _NAME_MAPS) for k, x in v.items() if k not in _DOC_KEYS}
     if isinstance(v, list):
         return [_strip(x) for x in v]
     return v
