@@ -1,5 +1,9 @@
 # gothon
 
+[![ci](https://github.com/ayush27prasad/gothon/actions/workflows/ci.yml/badge.svg)](https://github.com/ayush27prasad/gothon/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/ayush27prasad/gothon.svg)](https://pkg.go.dev/github.com/ayush27prasad/gothon)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Use Python libraries from your Go server, without running a Python server.
 
 gothon runs your Python functions on a pool of warm worker processes that your Go
@@ -267,4 +271,8 @@ go test ./internal/codegen -update   # after changing code generation
 
 ## License
 
-MIT
+gothon is released under the [MIT License](LICENSE). You may use, modify and
+distribute it, including in commercial and closed-source projects, as long as the
+copyright notice and license text are kept with it.
+
+Copyright (c) 2026 Ayush Prasad
