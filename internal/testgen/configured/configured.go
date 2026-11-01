@@ -63,7 +63,10 @@ func Start(ctx context.Context, rt *gothon.Runtime, cfg Config, settings Setting
 // Pool returns the underlying worker pool.
 func (c *Client) Pool() *gothon.Pool { return c.pool }
 
-// Close stops the workers.
+// Shutdown stops the workers after the calls in progress finish.
+func (c *Client) Shutdown(ctx context.Context) error { return c.pool.Shutdown(ctx) }
+
+// Close stops the workers at once; calls in progress fail.
 func (c *Client) Close() error { return c.pool.Close() }
 
 // Info runs the Python task "info".

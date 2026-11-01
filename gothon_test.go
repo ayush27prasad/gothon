@@ -475,3 +475,46 @@ func TestMaxConcurrency(t *testing.T) {
 		t.Fatalf("3 spins with MaxConcurrency 1 took %v, want them run one at a time", d)
 	}
 }
+
+func TestShutdownGraceful(t *testing.T) {
+	p, logs := start(t, "basic", 2)
+	result := make(chan error, 1)
+	go func() { result <- p.Call(context.Background(), "spin", 300, nil) }()
+	time.Sleep(50 * time.Millisecond)
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- p.Shutdown(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	if err := p.Call(context.Background(), "pid", nil, nil); !errors.Is(err, ErrClosed) {
+		t.Fatalf("call during shutdown: want ErrClosed, got %v", err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("in-flight call should finish, got %v", err)
+	}
+	if err := <-shutdown; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "replacing") {
+		t.Fatalf("workers should exit cleanly, not be replaced:\n%s", logs)
+	}
+}
+
+func TestShutdownForced(t *testing.T) {
+	p, _ := start(t, "basic", 1)
+	result := make(chan error, 1)
+	go func() { result <- p.Call(context.Background(), "spin", 5000, nil) }()
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	if err := p.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+	if d := time.Since(t0); d > time.Second {
+		t.Fatalf("forced shutdown took %v", d)
+	}
+	if err := <-result; !errors.Is(err, ErrClosed) {
+		t.Fatalf("cut-off call: want ErrClosed, got %v", err)
+	}
+}

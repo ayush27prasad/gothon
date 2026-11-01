@@ -46,7 +46,7 @@ func Generate(e *schema.Export, opts Options) ([]byte, error) {
 	}
 
 	var methods []method
-	used := map[string]bool{"Close": true, "Pool": true}
+	used := map[string]bool{"Close": true, "Pool": true, "Shutdown": true}
 	for _, t := range e.Tasks {
 		m := method{task: t.Name, doc: t.Doc, name: unique(goName(t.Name), used)}
 		var err error
@@ -148,7 +148,9 @@ func Generate(e *schema.Export, opts Options) ([]byte, error) {
 	b.WriteString("\treturn &Client{pool: p}, nil\n}\n\n")
 	b.WriteString("// Pool returns the underlying worker pool.\n")
 	b.WriteString("func (c *Client) Pool() *gothon.Pool { return c.pool }\n\n")
-	b.WriteString("// Close stops the workers.\n")
+	b.WriteString("// Shutdown stops the workers after the calls in progress finish.\n")
+	b.WriteString("func (c *Client) Shutdown(ctx context.Context) error { return c.pool.Shutdown(ctx) }\n\n")
+	b.WriteString("// Close stops the workers at once; calls in progress fail.\n")
 	b.WriteString("func (c *Client) Close() error { return c.pool.Close() }\n")
 	for _, m := range methods {
 		b.WriteString("\n")

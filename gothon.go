@@ -51,6 +51,9 @@ type Pool struct {
 	waiters list.List            // of chan *worker, first come first served
 	live    map[*worker]struct{} // every running process, so Close can kill them
 
+	draining bool           // Shutdown has begun; guarded by mu
+	inflight sync.WaitGroup // calls in progress, for Shutdown
+
 	closed    chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup // watchers
@@ -231,6 +234,15 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	if err != nil {
 		return fmt.Errorf("gothon: encode input for %q: %w", task, err)
 	}
+	p.mu.Lock()
+	if p.draining || p.isClosed() {
+		p.mu.Unlock()
+		return ErrClosed
+	}
+	p.inflight.Add(1)
+	p.mu.Unlock()
+	defer p.inflight.Done()
+
 	t := p.task(task)
 	if t.timeout > 0 {
 		var cancel context.CancelFunc
@@ -286,20 +298,70 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	}
 }
 
+// Shutdown stops the pool gracefully. Calls made after it begins fail with
+// ErrClosed; calls already running or waiting finish; then each worker exits on
+// its own as its input closes. If ctx ends first, the remaining calls are cut off
+// as by Close and Shutdown returns ctx.Err().
+func (p *Pool) Shutdown(ctx context.Context) error {
+	p.mu.Lock()
+	p.draining = true
+	p.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		p.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		p.stop(true)
+		return nil
+	case <-ctx.Done():
+		p.stop(false)
+		return ctx.Err()
+	}
+}
+
 // Close kills all workers and waits for them to exit. Calls in progress fail with ErrClosed.
 func (p *Pool) Close() error {
+	p.stop(false)
+	return nil
+}
+
+// stop closes the pool. Graceful stops let idle workers exit by closing their
+// input, and kill any that are still running after a few seconds.
+func (p *Pool) stop(graceful bool) {
 	p.closeOnce.Do(func() {
 		p.mu.Lock()
 		close(p.closed)
 		for w := range p.live {
-			w.kill()
+			if graceful {
+				w.in.Close()
+			} else {
+				w.kill()
+			}
 		}
 		p.idle = nil
 		p.mu.Unlock()
+		if !graceful {
+			return
+		}
+		exited := make(chan struct{})
+		go func() {
+			p.wg.Wait()
+			close(exited)
+		}()
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			p.mu.Lock()
+			for w := range p.live {
+				w.kill()
+			}
+			p.mu.Unlock()
+		}
 	})
 	p.wg.Wait()
 	p.rt.release(p)
-	return nil
 }
 
 // acquire takes an idle worker, or queues until one is released.

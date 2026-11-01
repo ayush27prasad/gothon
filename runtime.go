@@ -33,6 +33,22 @@ func NewRuntime(d Defaults) *Runtime {
 	return &Runtime{defaults: d, logger: logger, pools: make(map[*Pool]struct{})}
 }
 
+// Shutdown stops every module gracefully, in parallel; see Pool.Shutdown.
+func (rt *Runtime) Shutdown(ctx context.Context) error {
+	pools := rt.snapshot()
+	errs := make(chan error, len(pools))
+	for _, p := range pools {
+		go func() { errs <- p.Shutdown(ctx) }()
+	}
+	var all []error
+	for range pools {
+		if err := <-errs; err != nil {
+			all = append(all, err)
+		}
+	}
+	return errors.Join(all...)
+}
+
 // Close kills the workers of every module. Calls in progress fail with ErrClosed.
 func (rt *Runtime) Close() error {
 	for _, p := range rt.snapshot() {
