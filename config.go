@@ -23,8 +23,9 @@ type Defaults struct {
 	MaxWorkers int
 
 	// Module defaults; see ModuleConfig.
-	Workers      int
-	StartTimeout time.Duration
+	Workers          int
+	ThreadsPerWorker int
+	StartTimeout     time.Duration
 
 	// Task defaults; see TaskConfig.
 	Timeout      time.Duration
@@ -52,6 +53,12 @@ type ModuleConfig struct {
 
 	// Workers is the number of Python processes. Default runtime.GOMAXPROCS(0).
 	Workers int
+	// ThreadsPerWorker sets OMP_NUM_THREADS, OPENBLAS_NUM_THREADS, MKL_NUM_THREADS,
+	// VECLIB_MAXIMUM_THREADS and NUMEXPR_NUM_THREADS for the workers. Libraries such
+	// as numpy and PyTorch otherwise start one thread per core in every worker,
+	// oversubscribing the CPU. Variables set in Env take precedence.
+	// Default: GOMAXPROCS divided by Workers, at least 1.
+	ThreadsPerWorker int
 	// StartTimeout bounds how long a worker may take to import the module. Default 60s.
 	StartTimeout time.Duration
 

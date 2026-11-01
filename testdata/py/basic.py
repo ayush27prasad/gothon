@@ -57,3 +57,8 @@ def crash() -> None:
 def print_and_log() -> str:
     print("hello from stdout")
     return "ok"
+
+
+@gothon.task
+def getenv(name: str) -> str | None:
+    return os.environ.get(name)

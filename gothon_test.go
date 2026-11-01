@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -569,5 +571,33 @@ func TestDrainTimeoutKills(t *testing.T) {
 	}
 	if d := time.Since(t0); d > 2*time.Second {
 		t.Fatalf("took %v; the drained task was not cut off", d)
+	}
+}
+
+func TestThreadsPerWorker(t *testing.T) {
+	py := testPython(t)
+	rt := NewRuntime(Defaults{})
+	env := func(cfg ModuleConfig) string {
+		t.Helper()
+		cfg.Python, cfg.Dir, cfg.Name = py, "testdata/py", "basic"
+		p, err := rt.Start(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+		var v string
+		if err := p.Call(context.Background(), "getenv", "OMP_NUM_THREADS", &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if got, want := env(ModuleConfig{Workers: 2}), strconv.Itoa(max(1, runtime.GOMAXPROCS(0)/2)); got != want {
+		t.Fatalf("default threads = %s, want %s", got, want)
+	}
+	if got := env(ModuleConfig{Workers: 1, ThreadsPerWorker: 3}); got != "3" {
+		t.Fatalf("ThreadsPerWorker = %s, want 3", got)
+	}
+	if got := env(ModuleConfig{Workers: 1, Env: []string{"OMP_NUM_THREADS=7"}}); got != "7" {
+		t.Fatalf("Env should win, got %s", got)
 	}
 }

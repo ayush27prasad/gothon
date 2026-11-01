@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -97,6 +98,10 @@ func startPool(ctx context.Context, rt *Runtime, cfg ModuleConfig) (*Pool, error
 		pythonPath = append(pythonPath, v)
 	}
 	env := append(os.Environ(), "PYTHONUNBUFFERED=1", "PYTHONFAULTHANDLER=1")
+	threads := strconv.Itoa(first(max(1, runtime.GOMAXPROCS(0)/p.workers), cfg.ThreadsPerWorker, d.ThreadsPerWorker))
+	for _, v := range []string{"OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"} {
+		env = append(env, v+"="+threads)
+	}
 	if cfg.SchemaHash != "" {
 		env = append(env, "GOTHON_SCHEMA_HASH=1")
 	}
