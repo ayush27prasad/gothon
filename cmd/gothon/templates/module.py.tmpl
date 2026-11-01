@@ -4,6 +4,7 @@ Conventions:
 - Mark each function Go calls with @gothon.task.
 - A task takes at most one argument. Annotate it and the return type, ideally
   with pydantic models: they validate the data and become the Go types.
+- Tasks may be `async def`; they run on one event loop per worker.
 - Load expensive things (models, clients) at module level. That runs once per
   worker process, not once per call. `gothon gen` also imports this module and
   sets GOTHON_GEN=1 while it does; check it to skip heavy work there.

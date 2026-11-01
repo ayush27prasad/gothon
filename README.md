@@ -20,8 +20,13 @@ like any other dependency. There is no HTTP, no ports and no cgo.
   serves calls over pipes.
 - **Go owns scheduling.** Calls wait for a free worker in arrival order. If a
   call's context ends while Python is still running, that worker is killed and
-  replaced, so abandoned work never delays the next request. Crashed workers are
-  replaced automatically.
+  replaced (or, for slow-starting modules, allowed to finish out of rotation), so
+  abandoned work never delays the next request. Crashed workers are replaced
+  automatically.
+- **Built for request paths.** Queue limits shed load with `ErrBusy` instead of
+  letting every request time out, calls that cannot finish before their deadline
+  are rejected before they cost a worker, and `Shutdown` lets in-flight calls
+  finish during a deploy.
 - **Typed both ways.** Task inputs and outputs are pydantic models. `gothon gen`
   turns them into Go structs and a client. Each worker reports a hash of its task
   signatures at startup, and a client generated from older Python refuses to start.
@@ -73,11 +78,13 @@ import (
 	"example.com/yourapp/internal/py/greeter"
 )
 
-client, err := greeter.Start(ctx, gothon.Config{Workers: 4})
+rt := gothon.NewRuntime(gothon.Defaults{}) // one per program
+defer rt.Shutdown(context.Background())
+
+client, err := greeter.Start(ctx, rt, greeter.Config{})
 if err != nil {
 	return err
 }
-defer client.Close()
 
 out, err := client.Greet(ctx, greeter.GreetIn{Name: "gopher"})
 ```
@@ -96,6 +103,9 @@ coding agent can follow them too.
   the Go types.
 - Put expensive setup (models, API clients) at module level. It runs once per
   worker, not once per call.
+- Tasks may be `async def`. Each worker runs them on one event loop that lives as
+  long as the worker, so async clients created at module level keep their
+  connections. A worker still runs one call at a time.
 - `gothon gen` imports your module to read the types, with `GOTHON_GEN=1` set.
   Check it to skip heavy work such as loading model weights during generation.
 - Read configuration through a pydantic-settings class, not `os.getenv` (see below).
@@ -146,7 +156,7 @@ settings = Settings()
 class, `Start` requires it, so a caller can't forget to configure the module:
 
 ```go
-client, err := billing.Start(ctx, gothon.Config{}, billing.Settings{
+client, err := billing.Start(ctx, rt, billing.Config{}, billing.Settings{
 	APIKey: os.Getenv("STRIPE_KEY"), // from wherever your Go app keeps secrets
 })
 ```
@@ -173,27 +183,90 @@ Every failure reported by Python is a `*gothon.PythonError`:
 | `dispatch` | no task with that name |
 
 Validation errors never echo input values, so user data does not end up in logs.
-Other errors: `context.DeadlineExceeded` or `context.Canceled` when the call's
-context ends; `gothon.ErrWorkerExited` when the worker died mid-call;
-`gothon.ErrClosed` after `Close`; `gothon.ErrSchemaMismatch` from `Start` when the
-Python tasks changed since the client was generated.
+Other errors:
+
+| Error | When |
+|---|---|
+| `gothon.ErrBusy` | the task's queue is full, or the call could not finish before its deadline (that case also matches `context.DeadlineExceeded`) |
+| `context.DeadlineExceeded`, `context.Canceled` | the call's context ended, or the task's `Timeout` passed |
+| `gothon.ErrWorkerExited` | the worker died mid-call; it is replaced |
+| `gothon.ErrClosed` | the module is shutting down or closed |
+| `gothon.ErrSchemaMismatch` | from `Start`: the Python tasks changed since the client was generated |
 
 ## Configuration
 
-`gothon.Config` fields are all optional when you use a generated client:
+Settings come in three layers: `gothon.Defaults` for the whole `Runtime`,
+`gothon.ModuleConfig` for one module, and `gothon.TaskConfig` for one task. The
+most specific non-zero value wins; when every layer leaves a setting at zero, the
+built-in default applies. For `Timeout`, `MaxQueue` and `MaxConcurrency`, a negative
+value means "no limit" and overrides a limit set on a wider layer.
 
-| Field | Default |
-|---|---|
-| `Workers` | `runtime.GOMAXPROCS(0)`, which respects container CPU limits |
-| `Python`, `Dir` | the project's `python/.venv` and `python/`, found through `gothon.json` |
-| `Root` | `$GOTHON_ROOT`, else the nearest `gothon.json` at or above the working directory |
-| `StartTimeout` | 60s per worker to import the module |
-| `MaxFrame` | 64 MiB per response |
-| `Env` | extra `KEY=VALUE` variables for the workers |
-| `Logger` | `slog.Default()`; receives Python's stdout and stderr line by line |
+```go
+rt := gothon.NewRuntime(gothon.Defaults{
+	Timeout:    5 * time.Second, // every task
+	MaxQueue:   100,
+	MaxWorkers: 16, // all modules together
+})
+
+search, err := search.Start(ctx, rt, search.Config{
+	Module: gothon.ModuleConfig{Workers: 8, Timeout: 2 * time.Second},
+	Tasks: search.TaskConfigs{ // generated: one typed field per Python task
+		Embed:   gothon.TaskConfig{Timeout: 300 * time.Millisecond},
+		Reindex: gothon.TaskConfig{Timeout: time.Minute, MaxConcurrency: 2},
+	},
+})
+```
+
+`TaskConfigs` has a field for each task, so renaming a task in Python and running
+`gothon gen` turns a stale setting into a compile error rather than a silent no-op.
+
+| Setting | Layers | Default | |
+|---|---|---|---|
+| `Timeout` | all | none | deadline when the caller's context has none; caps a later one |
+| `MaxQueue` | all | no limit | calls of a task allowed to wait; more fail with `ErrBusy` |
+| `OnTimeout` | all | `Kill` | `Kill` replaces the worker; `Drain` lets the task finish out of rotation |
+| `DrainTimeout` | all | 1 min | longest a drained task may run before its worker is killed |
+| `MaxFrame` | all | 64 MiB | largest response |
+| `MaxConcurrency` | task | workers | most workers the task may occupy at once |
+| `Workers` | runtime, module | `GOMAXPROCS` | Python processes per module |
+| `ThreadsPerWorker` | runtime, module | cores ÷ workers | sets `OMP_NUM_THREADS` and the BLAS thread variables |
+| `StartTimeout` | runtime, module | 60s | time for a worker to import the module |
+| `MaxJobs` | runtime, module | never | replace a worker after this many calls, bounding memory leaks |
+| `MaxWorkers` | runtime | no cap | Python processes across all modules |
+| `Python`, `Dir`, `Env` | module | from `gothon.json` | interpreter, module directory, extra variables |
+| `Root`, `Logger` | runtime | nearest `gothon.json`, `slog.Default()` | project root; receives Python's output line by line |
 
 The embedded Python runtime is unpacked into the user cache directory, falling
 back to the temp directory. Set `GOTHON_CACHE_DIR` to choose the location.
+
+## Serving user traffic
+
+When a Go handler calls Python on a request path:
+
+- **Set `Timeout` and `MaxQueue`,** and map `gothon.ErrBusy` to 503. Under a spike,
+  extra requests then fail fast instead of queueing until all of them time out.
+  A call whose remaining deadline is under half the task's usual run time is
+  rejected before it reaches Python, so it never costs a worker.
+- **Use `OnTimeout: gothon.Drain` for modules that are slow to start,** such as
+  those loading large models. A timeout then returns its error at once without
+  forcing a model reload.
+- **Cap slow tasks with `MaxConcurrency`** so they cannot starve fast tasks in the
+  same module.
+- **Shut down gracefully.** On SIGTERM (ECS and Kubernetes send it before
+  stopping a container), call `rt.Shutdown(ctx)`: new calls fail with
+  `ErrClosed`, calls in progress finish, then workers exit.
+- **Watch `rt.Stats()`:** idle, busy and starting workers, waiting calls, restarts,
+  and per task the calls, errors, timeouts, rejections and average run time.
+
+```go
+ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+defer stop()
+<-ctx.Done()
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+defer cancel()
+srv.Shutdown(shutdownCtx) // stop HTTP first, so no new calls arrive
+rt.Shutdown(shutdownCtx)
+```
 
 ## CLI
 
@@ -236,10 +309,11 @@ CI so a stale client never ships.
 
 ## Without code generation
 
-The pool works on its own with any JSON-compatible values:
+The runtime works on its own with any JSON-compatible values:
 
 ```go
-pool, err := gothon.Start(ctx, gothon.Config{Python: "python3", Dir: "py", Module: "greeter"})
+rt := gothon.NewRuntime(gothon.Defaults{})
+pool, err := rt.Start(ctx, gothon.ModuleConfig{Name: "greeter", Python: "python3", Dir: "py"})
 var out struct{ Message string }
 err = pool.Call(ctx, "greet", map[string]string{"name": "gopher"}, &out)
 

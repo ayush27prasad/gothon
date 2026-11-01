@@ -21,3 +21,12 @@ produced them, and a stale client refuses to start.
 - pydantic-settings support: a generated `Settings` type that `Start` requires, and
   warnings for direct environment reads.
 - Startup checks for the Python version, pydantic and the project environment.
+- `Runtime` with three configuration layers (runtime, module, task), typed
+  per-task settings in generated clients, and a process budget across modules.
+- Per-call `Timeout`, `MaxQueue` with `ErrBusy`, and rejection of calls that
+  cannot finish before their deadline.
+- `MaxConcurrency` per task, `OnTimeout: Drain` with `DrainTimeout`,
+  `ThreadsPerWorker`, and `MaxJobs` worker recycling.
+- Graceful `Shutdown` for a pool or the whole runtime.
+- `Stats` for pools and tasks.
+- `async def` tasks, run on a persistent event loop per worker.
