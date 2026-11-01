@@ -19,10 +19,32 @@ PROTOCOL = 1
 
 _header = struct.Struct(">IB")
 _ValidationError: Any = None
+_loop: Any = None
+_here = os.path.dirname(os.path.abspath(__file__))
 
 
-def _error(stage: str, e: BaseException, skip: int = 0) -> bytes:
-    """Encode an exception for Go. skip drops runtime frames from the traceback."""
+def _internal(filename: str) -> bool:
+    return (
+        filename.startswith("<frozen")
+        or os.path.dirname(os.path.abspath(filename)) == _here
+        or f"{os.sep}asyncio{os.sep}" in filename
+        or f"{os.sep}importlib{os.sep}" in filename
+    )
+
+
+def _run(coro: Any) -> Any:
+    """Run a coroutine on the worker's event loop, created on first use."""
+    global _loop
+    if _loop is None:
+        import asyncio
+
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
+
+
+def _error(stage: str, e: BaseException) -> bytes:
+    """Encode an exception for Go, with the traceback starting at the user's code."""
     out: dict[str, Any] = {"stage": stage, "type": type(e).__name__, "message": str(e)}
     if _ValidationError is not None and isinstance(e, _ValidationError):
         # No traceback or input values: the caller only needs which fields failed.
@@ -33,9 +55,8 @@ def _error(stage: str, e: BaseException, skip: int = 0) -> bytes:
         )
     else:
         tb = e.__traceback__
-        for _ in range(skip):
-            if tb is not None:
-                tb = tb.tb_next
+        while tb is not None and tb.tb_next is not None and _internal(tb.tb_frame.f_code.co_filename):
+            tb = tb.tb_next
         out["traceback"] = "".join(traceback.format_exception(type(e), e, tb))
     return json.dumps(out).encode()
 
@@ -48,12 +69,14 @@ def _call(t: Any, body: bytes) -> tuple[int, bytes]:
             return ERROR, _error("input", e)
     try:
         result = t.fn(arg) if t.input is not None else t.fn()
+        if t.is_async:
+            result = _run(result)
     except Exception as e:
-        return ERROR, _error("task", e, skip=1)
+        return ERROR, _error("task", e)
     try:
         return OK, t.output.dump_json(result, warnings="error")
     except Exception as e:
-        return ERROR, _error("output", e, skip=1)
+        return ERROR, _error("output", e)
 
 
 def main() -> int:

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 
@@ -62,3 +63,20 @@ def print_and_log() -> str:
 @gothon.task
 def getenv(name: str) -> str | None:
     return os.environ.get(name)
+
+
+@gothon.task
+async def async_double(x: int) -> int:
+    await asyncio.sleep(0.01)
+    return x * 2
+
+
+@gothon.task
+async def async_fail() -> None:
+    await asyncio.sleep(0)
+    raise RuntimeError("async boom")
+
+
+@gothon.task
+async def loop_id() -> int:
+    return id(asyncio.get_running_loop())

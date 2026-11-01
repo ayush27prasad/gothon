@@ -21,6 +21,7 @@ class Task:
         hints = typing.get_type_hints(fn)
         self.fn = fn
         self.name = name
+        self.is_async = inspect.iscoroutinefunction(fn)
         self.input = TypeAdapter(hints.get(params[0].name, Any)) if params else None
         self.output = TypeAdapter(hints.get("return", Any))
 
@@ -35,7 +36,9 @@ def task(fn: Any = None, /, *, name: str | None = None) -> Any:
     """Register a function so Go can call it. Use as @task or @task(name="...").
 
     The function takes at most one argument. Its type hints, usually pydantic
-    models, validate the input from Go and the output sent back.
+    models, validate the input from Go and the output sent back. It may be an
+    `async def`; each worker runs those on one event loop that lives as long as the
+    worker, so async clients created at module level keep their connections.
     """
 
     def register(f: F) -> F:

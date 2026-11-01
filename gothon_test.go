@@ -139,6 +139,9 @@ func TestStartupErrors(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Stage != StageImport || pe.Type != "ModuleNotFoundError" {
 		t.Fatalf("broken module: %#v", err)
 	}
+	if strings.Contains(pe.Traceback, "importlib") || !strings.Contains(pe.Traceback, "broken.py") {
+		t.Fatalf("import traceback should start at the module:\n%s", pe.Traceback)
+	}
 	_, err = NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: py, Dir: "testdata/py", Name: "notasks", Workers: 1})
 	if !errors.As(err, &pe) || !strings.Contains(pe.Message, "no @gothon.task") {
 		t.Fatalf("module without tasks: %#v", err)
@@ -666,5 +669,30 @@ func TestStats(t *testing.T) {
 	}
 	if all := rt.Stats(); len(all) != 1 || all[0].Module != "basic" {
 		t.Fatalf("runtime stats: %+v", all)
+	}
+}
+
+func TestAsyncTasks(t *testing.T) {
+	p, _ := start(t, "basic", 1)
+	ctx := context.Background()
+	var n int
+	if err := p.Call(ctx, "async_double", 21, &n); err != nil || n != 42 {
+		t.Fatalf("async_double = %d, %v", n, err)
+	}
+
+	var a, b int
+	p.Call(ctx, "loop_id", nil, &a)
+	p.Call(ctx, "loop_id", nil, &b)
+	if a == 0 || a != b {
+		t.Fatalf("calls should share the worker's event loop: %d vs %d", a, b)
+	}
+
+	var pe *PythonError
+	err := p.Call(ctx, "async_fail", nil, nil)
+	if !errors.As(err, &pe) || pe.Stage != StageTask || pe.Type != "RuntimeError" || pe.Message != "async boom" {
+		t.Fatalf("async error: %#v", err)
+	}
+	if strings.Contains(pe.Traceback, "asyncio") || !strings.Contains(pe.Traceback, `raise RuntimeError("async boom")`) {
+		t.Fatalf("traceback should start at the task:\n%s", pe.Traceback)
 	}
 }
