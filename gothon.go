@@ -137,6 +137,9 @@ type task struct {
 	maxFrame int
 	slots    chan struct{} // MaxConcurrency tokens; nil when unlimited
 
+	onTimeout    TimeoutPolicy
+	drainTimeout time.Duration
+
 	waiting atomic.Int64 // calls waiting for a worker or a slot
 	avg     atomic.Int64 // moving average of successful run times, in ns
 	samples atomic.Int64
@@ -214,6 +217,9 @@ func (p *Pool) task(name string) *task {
 		timeout:  first(0, tc.Timeout, mc.Timeout, d.Timeout),
 		maxQueue: first(0, tc.MaxQueue, mc.MaxQueue, d.MaxQueue),
 		maxFrame: first(64<<20, tc.MaxFrame, mc.MaxFrame, d.MaxFrame),
+
+		onTimeout:    first(Kill, tc.OnTimeout, mc.OnTimeout, d.OnTimeout),
+		drainTimeout: first(time.Minute, tc.DrainTimeout, mc.DrainTimeout, d.DrainTimeout),
 	}
 	if n := tc.MaxConcurrency; n > 0 && n < p.workers {
 		t.slots = make(chan struct{}, n)
@@ -253,7 +259,11 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	if err != nil {
 		return err
 	}
-	defer leave()
+	defer func() {
+		if leave != nil {
+			leave()
+		}
+	}()
 	w, err := p.acquire(ctx, t)
 	if err != nil {
 		return err
@@ -265,7 +275,26 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	}
 
 	began := time.Now()
-	kind, payload, err := w.roundtrip(ctx, task, input, t.maxFrame)
+	var kind byte
+	var payload []byte
+	if t.onTimeout == Drain && ctx.Done() != nil {
+		// Run the call without interrupting it, so a timeout can leave it running.
+		res := make(chan result, 1)
+		go func() {
+			k, pl, err := w.roundtrip(context.Background(), task, input, t.maxFrame)
+			res <- result{k, pl, err}
+		}()
+		select {
+		case r := <-res:
+			kind, payload, err = r.kind, r.payload, r.err
+		case <-ctx.Done():
+			go p.drain(w, t, res, leave)
+			leave = nil // the drain holds the slot until the task finishes
+			return ctx.Err()
+		}
+	} else {
+		kind, payload, err = w.roundtrip(ctx, task, input, t.maxFrame)
+	}
 	if err != nil {
 		w.kill() // its watcher starts a replacement
 		switch {
@@ -295,6 +324,33 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 		return decodeError(task, payload)
 	default:
 		return fmt.Errorf("gothon: unexpected frame kind %d from %q", kind, task)
+	}
+}
+
+type result struct {
+	kind    byte
+	payload []byte
+	err     error
+}
+
+// drain waits for a timed-out task to finish, then returns its worker to the pool.
+// If the task runs past DrainTimeout, the worker is killed and replaced instead.
+func (p *Pool) drain(w *worker, t *task, res <-chan result, leave func()) {
+	defer leave()
+	timer := time.NewTimer(t.drainTimeout)
+	defer timer.Stop()
+	select {
+	case r := <-res:
+		if r.err != nil {
+			w.kill()
+			return
+		}
+		p.release(w)
+	case <-timer.C:
+		p.logger.Warn("gothon: timed-out task still running after DrainTimeout, killing worker",
+			"task", t.name, "pid", w.pid, "drain_timeout", t.drainTimeout)
+		w.kill()
+	case <-p.closed:
 	}
 }
 

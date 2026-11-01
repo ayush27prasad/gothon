@@ -518,3 +518,56 @@ func TestShutdownForced(t *testing.T) {
 		t.Fatalf("cut-off call: want ErrClosed, got %v", err)
 	}
 }
+
+func TestDrainOnTimeout(t *testing.T) {
+	py := testPython(t)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 1, OnTimeout: Drain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	before := pid(t, p)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	if err := p.Call(ctx, "spin", 400, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want DeadlineExceeded, got %v", err)
+	}
+	if d := time.Since(t0); d > 200*time.Millisecond {
+		t.Fatalf("caller should get its error at the deadline, took %v", d)
+	}
+	// The worker finishes the task, then serves the next call: no restart.
+	if after := pid(t, p); after != before {
+		t.Fatal("Drain should keep the worker")
+	}
+	if d := time.Since(t0); d < 350*time.Millisecond {
+		t.Fatalf("next call should wait for the drained task, took %v", d)
+	}
+}
+
+func TestDrainTimeoutKills(t *testing.T) {
+	py := testPython(t)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 1,
+		Tasks: map[string]TaskConfig{"spin": {OnTimeout: Drain, DrainTimeout: 100 * time.Millisecond}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	before := pid(t, p)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	p.Call(ctx, "spin", 5000, nil)
+	if after := pid(t, p); after == before {
+		t.Fatal("worker should be killed after DrainTimeout")
+	}
+	if d := time.Since(t0); d > 2*time.Second {
+		t.Fatalf("took %v; the drained task was not cut off", d)
+	}
+}

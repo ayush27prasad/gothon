@@ -27,9 +27,11 @@ type Defaults struct {
 	StartTimeout time.Duration
 
 	// Task defaults; see TaskConfig.
-	Timeout  time.Duration
-	MaxQueue int
-	MaxFrame int
+	Timeout      time.Duration
+	MaxQueue     int
+	MaxFrame     int
+	OnTimeout    TimeoutPolicy
+	DrainTimeout time.Duration
 }
 
 // ModuleConfig configures the worker processes of one Python module and the
@@ -54,9 +56,11 @@ type ModuleConfig struct {
 	StartTimeout time.Duration
 
 	// Task defaults for this module; see TaskConfig.
-	Timeout  time.Duration
-	MaxQueue int
-	MaxFrame int
+	Timeout      time.Duration
+	MaxQueue     int
+	MaxFrame     int
+	OnTimeout    TimeoutPolicy
+	DrainTimeout time.Duration
 
 	// Tasks configures individual tasks by name, overriding the module's defaults.
 	Tasks map[string]TaskConfig
@@ -78,11 +82,31 @@ type TaskConfig struct {
 	MaxQueue int
 	// MaxFrame caps the size of one response in bytes. Default 64 MiB.
 	MaxFrame int
+	// OnTimeout decides what happens to a worker whose call runs out of time while
+	// Python is still working. Default Kill.
+	OnTimeout TimeoutPolicy
+	// DrainTimeout is the longest a task may keep running after its call timed out
+	// under the Drain policy; then the worker is killed anyway. Default 1 minute.
+	DrainTimeout time.Duration
 	// MaxConcurrency is how many workers the task may occupy at once, so a slow
 	// task cannot starve the module's other tasks. Calls over the limit wait (and
 	// count toward MaxQueue). Default: no limit beyond the module's workers.
 	MaxConcurrency int
 }
+
+// TimeoutPolicy is what happens to a worker whose call runs out of time.
+type TimeoutPolicy int
+
+const (
+	// Kill kills the worker and starts a replacement. The caller's slot is free at
+	// once, at the cost of a restart: right for modules that start quickly.
+	Kill TimeoutPolicy = iota + 1
+	// Drain lets the task finish out of rotation, then returns the worker to the
+	// pool. The caller still gets its error at once. Right for modules that are
+	// slow to start, such as those loading large models, where a restart costs
+	// more than waiting.
+	Drain
+)
 
 // first returns the first non-zero value, most specific first, or def if all are zero.
 func first[T comparable](def T, values ...T) T {
