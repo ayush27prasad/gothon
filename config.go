@@ -26,6 +26,7 @@ type Defaults struct {
 	Workers          int
 	ThreadsPerWorker int
 	StartTimeout     time.Duration
+	MaxJobs          int
 
 	// Task defaults; see TaskConfig.
 	Timeout      time.Duration
@@ -61,6 +62,10 @@ type ModuleConfig struct {
 	ThreadsPerWorker int
 	// StartTimeout bounds how long a worker may take to import the module. Default 60s.
 	StartTimeout time.Duration
+	// MaxJobs replaces a worker after it has served this many calls, bounding the
+	// memory growth of Python libraries that leak. The worker exits cleanly and a
+	// new one starts, as after a crash. Default: never.
+	MaxJobs int
 
 	// Task defaults for this module; see TaskConfig.
 	Timeout      time.Duration

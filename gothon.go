@@ -42,6 +42,7 @@ type Pool struct {
 	env          []string
 	workers      int
 	startTimeout time.Duration
+	maxJobs      int
 	logger       *slog.Logger
 
 	tasksMu sync.Mutex
@@ -76,6 +77,7 @@ func startPool(ctx context.Context, rt *Runtime, cfg ModuleConfig) (*Pool, error
 		python:       python,
 		workers:      first(runtime.GOMAXPROCS(0), cfg.Workers, d.Workers),
 		startTimeout: first(60*time.Second, cfg.StartTimeout, d.StartTimeout),
+		maxJobs:      first(0, cfg.MaxJobs, d.MaxJobs),
 		logger:       rt.logger.With("module", cfg.Name),
 		tasks:        make(map[string]*task),
 		closed:       make(chan struct{}),
@@ -313,7 +315,7 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 			return fmt.Errorf("%w while running %q: %v", ErrWorkerExited, task, err)
 		}
 	}
-	p.release(w)
+	p.done(w)
 
 	switch kind {
 	case frame.OK:
@@ -350,7 +352,7 @@ func (p *Pool) drain(w *worker, t *task, res <-chan result, leave func()) {
 			w.kill()
 			return
 		}
-		p.release(w)
+		p.done(w)
 	case <-timer.C:
 		p.logger.Warn("gothon: timed-out task still running after DrainTimeout, killing worker",
 			"task", t.name, "pid", w.pid, "drain_timeout", t.drainTimeout)
@@ -475,6 +477,19 @@ func (p *Pool) leave(e *list.Element, ch chan *worker) {
 	}
 }
 
+// done returns a worker after a completed call, or retires it once it has
+// served MaxJobs calls.
+func (p *Pool) done(w *worker) {
+	w.jobs++
+	if p.maxJobs <= 0 || w.jobs < p.maxJobs {
+		p.release(w)
+		return
+	}
+	w.retired.Store(true)
+	w.in.Close()                          // the worker exits on its own; its watcher replaces it
+	time.AfterFunc(5*time.Second, w.kill) // in case it does not
+}
+
 // release hands a worker to the longest waiting caller, or marks it idle.
 func (p *Pool) release(w *worker) {
 	p.mu.Lock()
@@ -537,7 +552,11 @@ func (p *Pool) watch(w *worker, ready <-chan struct{}) {
 	if p.isClosed() {
 		return
 	}
-	p.logger.Warn("gothon: worker exited, replacing it", "pid", w.pid, "err", err)
+	if w.retired.Load() {
+		p.logger.Info("gothon: recycling worker", "pid", w.pid, "jobs", w.jobs)
+	} else {
+		p.logger.Warn("gothon: worker exited, replacing it", "pid", w.pid, "err", err)
+	}
 	p.replace()
 }
 

@@ -601,3 +601,21 @@ func TestThreadsPerWorker(t *testing.T) {
 		t.Fatalf("Env should win, got %s", got)
 	}
 }
+
+func TestMaxJobs(t *testing.T) {
+	py := testPython(t)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 1, MaxJobs: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	first := pid(t, p)
+	if pid(t, p) != first || pid(t, p) != first {
+		t.Fatal("worker replaced before MaxJobs")
+	}
+	if pid(t, p) == first {
+		t.Fatal("worker not replaced after MaxJobs")
+	}
+}

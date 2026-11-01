@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,9 @@ type worker struct {
 	r      *bufio.Reader // buffered reads from out
 	buf    []byte        // reused request buffer
 	exited chan struct{} // closed once the process has exited
+	jobs   int           // calls served; touched only by the caller holding the worker
+
+	retired atomic.Bool // asked to exit after MaxJobs
 
 	killOnce sync.Once
 	logsDone sync.WaitGroup
