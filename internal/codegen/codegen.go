@@ -111,27 +111,40 @@ func Generate(e *schema.Export, opts Options) ([]byte, error) {
 	}
 	b.WriteString("}\n\n")
 
+	b.WriteString("// Config configures the client. Module sets up the worker processes and the\n")
+	b.WriteString("// defaults for every task; Tasks overrides individual tasks. The most specific\n")
+	b.WriteString("// non-zero setting wins, falling back to the Runtime's defaults.\n")
+	b.WriteString("type Config struct {\n\tModule gothon.ModuleConfig\n\tTasks  TaskConfigs\n}\n\n")
+	fmt.Fprintf(&b, "// TaskConfigs holds one configuration per task in %q.\n", opts.Module)
+	b.WriteString("type TaskConfigs struct {\n")
+	for _, m := range methods {
+		fmt.Fprintf(&b, "\t%s gothon.TaskConfig\n", m.name)
+	}
+	b.WriteString("}\n\n")
+
 	b.WriteString("// Client runs the tasks on a pool of Python workers.\n")
 	b.WriteString("type Client struct {\n\tpool *gothon.Pool\n}\n\n")
 	b.WriteString("var _ Tasks = (*Client)(nil)\n\n")
-	switch {
-	case single:
-		fmt.Fprintf(&b, "// Start launches workers for %q, configured by settings. It sets cfg.Module\n", opts.Module)
-		b.WriteString("// and cfg.SchemaHash and adds settings to cfg.Env; everything else in cfg is\n")
-		b.WriteString("// passed to gothon.Start.\n")
-		fmt.Fprintf(&b, "func Start(ctx context.Context, cfg gothon.Config, settings %s) (*Client, error) {\n", settingsNames[0])
-		b.WriteString("\tcfg.Module = Module\n\tcfg.SchemaHash = SchemaHash\n")
-		b.WriteString("\tcfg.Env = append(slices.Clip(cfg.Env), settings.Env()...)\n")
-	default:
-		fmt.Fprintf(&b, "// Start launches workers for %q. It sets cfg.Module and cfg.SchemaHash;\n", opts.Module)
-		b.WriteString("// everything else in cfg is passed to gothon.Start.\n")
+	if single {
+		fmt.Fprintf(&b, "// Start launches workers for %q on rt, configured by settings.\n", opts.Module)
+		fmt.Fprintf(&b, "func Start(ctx context.Context, rt *gothon.Runtime, cfg Config, settings %s) (*Client, error) {\n", settingsNames[0])
+	} else {
+		fmt.Fprintf(&b, "// Start launches workers for %q on rt.\n", opts.Module)
 		if len(e.Settings) > 1 {
-			b.WriteString("// Add each settings type to cfg.Env with its Env method.\n")
+			b.WriteString("// Add each settings type to cfg.Module.Env with its Env method.\n")
 		}
-		b.WriteString("func Start(ctx context.Context, cfg gothon.Config) (*Client, error) {\n")
-		b.WriteString("\tcfg.Module = Module\n\tcfg.SchemaHash = SchemaHash\n")
+		b.WriteString("func Start(ctx context.Context, rt *gothon.Runtime, cfg Config) (*Client, error) {\n")
 	}
-	b.WriteString("\tp, err := gothon.Start(ctx, cfg)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	b.WriteString("\tm := cfg.Module\n\tm.Name = Module\n\tm.SchemaHash = SchemaHash\n")
+	b.WriteString("\tm.Tasks = map[string]gothon.TaskConfig{\n")
+	for _, m := range methods {
+		fmt.Fprintf(&b, "\t\t%q: cfg.Tasks.%s,\n", m.task, m.name)
+	}
+	b.WriteString("\t}\n")
+	if single {
+		b.WriteString("\tm.Env = append(slices.Clip(m.Env), settings.Env()...)\n")
+	}
+	b.WriteString("\tp, err := rt.Start(ctx, m)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	b.WriteString("\treturn &Client{pool: p}, nil\n}\n\n")
 	b.WriteString("// Pool returns the underlying worker pool.\n")
 	b.WriteString("func (c *Client) Pool() *gothon.Pool { return c.pool }\n\n")

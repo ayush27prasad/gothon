@@ -53,12 +53,12 @@ func (l *logBuf) String() string {
 func start(t *testing.T, module string, workers int) (*Pool, *logBuf) {
 	t.Helper()
 	logs := &logBuf{}
-	p, err := Start(context.Background(), Config{
+	rt := NewRuntime(Defaults{Logger: slog.New(slog.NewTextHandler(logs, nil))})
+	p, err := rt.Start(context.Background(), ModuleConfig{
 		Python:  testPython(t),
 		Dir:     "testdata/py",
-		Module:  module,
+		Name:    module,
 		Workers: workers,
-		Logger:  slog.New(slog.NewTextHandler(logs, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -133,15 +133,15 @@ func TestErrors(t *testing.T) {
 func TestStartupErrors(t *testing.T) {
 	py := testPython(t)
 	var pe *PythonError
-	_, err := Start(context.Background(), Config{Python: py, Dir: "testdata/py", Module: "broken", Workers: 2})
+	_, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: py, Dir: "testdata/py", Name: "broken", Workers: 2})
 	if !errors.As(err, &pe) || pe.Stage != StageImport || pe.Type != "ModuleNotFoundError" {
 		t.Fatalf("broken module: %#v", err)
 	}
-	_, err = Start(context.Background(), Config{Python: py, Dir: "testdata/py", Module: "notasks", Workers: 1})
+	_, err = NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: py, Dir: "testdata/py", Name: "notasks", Workers: 1})
 	if !errors.As(err, &pe) || !strings.Contains(pe.Message, "no @gothon.task") {
 		t.Fatalf("module without tasks: %#v", err)
 	}
-	_, err = Start(context.Background(), Config{Python: "/no/such/python", Module: "basic", Workers: 1})
+	_, err = NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: "/no/such/python", Name: "basic", Workers: 1})
 	if err == nil || !strings.Contains(err.Error(), "gothon sync") {
 		t.Fatalf("missing interpreter: want a hint to run gothon sync, got %v", err)
 	}
@@ -204,7 +204,7 @@ func TestIdleWorkerKilledExternally(t *testing.T) {
 
 func TestStartContextDoesNotOwnWorkers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	p, err := Start(ctx, Config{Python: testPython(t), Dir: "testdata/py", Module: "basic", Workers: 1})
+	p, err := NewRuntime(Defaults{}).Start(ctx, ModuleConfig{Python: testPython(t), Dir: "testdata/py", Name: "basic", Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,28 +289,28 @@ func TestProjectDefaults(t *testing.T) {
 	}
 
 	// Dir comes from the project.
-	p, err := Start(context.Background(), Config{Root: root, Python: py, Module: "basic", Workers: 1})
+	p, err := NewRuntime(Defaults{Root: root}).Start(context.Background(), ModuleConfig{Python: py, Name: "basic", Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.Close()
 
 	// Python defaults to the project's venv, which does not exist yet.
-	_, err = Start(context.Background(), Config{Root: root, Module: "basic", Workers: 1})
+	_, err = NewRuntime(Defaults{Root: root}).Start(context.Background(), ModuleConfig{Name: "basic", Workers: 1})
 	if err == nil || !strings.Contains(err.Error(), filepath.Join(pyDir, ".venv")) || !strings.Contains(err.Error(), "gothon sync") {
 		t.Fatalf("want missing-venv error with a hint, got %v", err)
 	}
 
 	// An explicit root without a manifest is an error.
-	if _, err := Start(context.Background(), Config{Root: t.TempDir(), Module: "basic"}); !errors.Is(err, project.ErrNotFound) {
+	if _, err := NewRuntime(Defaults{Root: t.TempDir()}).Start(context.Background(), ModuleConfig{Name: "basic"}); !errors.Is(err, project.ErrNotFound) {
 		t.Fatalf("want project.ErrNotFound, got %v", err)
 	}
 }
 
 func TestSchemaHash(t *testing.T) {
 	py := testPython(t)
-	cfg := Config{Python: py, Dir: "testdata/py", Module: "basic", Workers: 1, SchemaHash: "0000000000000000"}
-	if _, err := Start(context.Background(), cfg); !errors.Is(err, ErrSchemaMismatch) {
+	cfg := ModuleConfig{Python: py, Dir: "testdata/py", Name: "basic", Workers: 1, SchemaHash: "0000000000000000"}
+	if _, err := NewRuntime(Defaults{}).Start(context.Background(), cfg); !errors.Is(err, ErrSchemaMismatch) {
 		t.Fatalf("want ErrSchemaMismatch, got %v", err)
 	}
 
@@ -322,7 +322,7 @@ func TestSchemaHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.SchemaHash = e.Hash
-	p, err := Start(context.Background(), cfg)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,13 +330,13 @@ func TestSchemaHash(t *testing.T) {
 }
 
 func TestSettingsValidationAtImport(t *testing.T) {
-	_, err := Start(context.Background(), Config{Python: testPython(t), Dir: "testdata/py", Module: "needs_config", Workers: 1})
+	_, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: testPython(t), Dir: "testdata/py", Name: "needs_config", Workers: 1})
 	var pe *PythonError
 	if !errors.As(err, &pe) || pe.Stage != StageImport || len(pe.Fields) != 1 || pe.Fields[0].Loc[0] != "api_key" {
 		t.Fatalf("want import-stage validation error for api_key, got %#v", err)
 	}
 
-	p, err := Start(context.Background(), Config{Python: testPython(t), Dir: "testdata/py", Module: "needs_config", Workers: 1, Env: []string{"NEEDS_CONFIG_API_KEY=secret"}})
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: testPython(t), Dir: "testdata/py", Name: "needs_config", Workers: 1, Env: []string{"NEEDS_CONFIG_API_KEY=secret"}})
 	if err != nil {
 		t.Fatal(err)
 	}

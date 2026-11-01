@@ -24,6 +24,19 @@ type Tasks interface {
 	Info(ctx context.Context) (Info, error)
 }
 
+// Config configures the client. Module sets up the worker processes and the
+// defaults for every task; Tasks overrides individual tasks. The most specific
+// non-zero setting wins, falling back to the Runtime's defaults.
+type Config struct {
+	Module gothon.ModuleConfig
+	Tasks  TaskConfigs
+}
+
+// TaskConfigs holds one configuration per task in "configured".
+type TaskConfigs struct {
+	Info gothon.TaskConfig
+}
+
 // Client runs the tasks on a pool of Python workers.
 type Client struct {
 	pool *gothon.Pool
@@ -31,14 +44,16 @@ type Client struct {
 
 var _ Tasks = (*Client)(nil)
 
-// Start launches workers for "configured", configured by settings. It sets cfg.Module
-// and cfg.SchemaHash and adds settings to cfg.Env; everything else in cfg is
-// passed to gothon.Start.
-func Start(ctx context.Context, cfg gothon.Config, settings Settings) (*Client, error) {
-	cfg.Module = Module
-	cfg.SchemaHash = SchemaHash
-	cfg.Env = append(slices.Clip(cfg.Env), settings.Env()...)
-	p, err := gothon.Start(ctx, cfg)
+// Start launches workers for "configured" on rt, configured by settings.
+func Start(ctx context.Context, rt *gothon.Runtime, cfg Config, settings Settings) (*Client, error) {
+	m := cfg.Module
+	m.Name = Module
+	m.SchemaHash = SchemaHash
+	m.Tasks = map[string]gothon.TaskConfig{
+		"info": cfg.Tasks.Info,
+	}
+	m.Env = append(slices.Clip(m.Env), settings.Env()...)
+	p, err := rt.Start(ctx, m)
 	if err != nil {
 		return nil, err
 	}

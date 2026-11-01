@@ -36,7 +36,7 @@ type worker struct {
 	tail     []string // last stderr lines, for startup failures
 }
 
-func startWorker(cfg *Config, env []string) (*worker, error) {
+func startWorker(python, module string, env []string, logger *slog.Logger) (*worker, error) {
 	reqR, reqW, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func startWorker(cfg *Config, env []string) (*worker, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command(cfg.Python, "-m", "gothon._runtime", cfg.Module)
+	cmd := exec.Command(python, "-m", "gothon._runtime", module)
 	cmd.Env = env
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
@@ -71,9 +71,9 @@ func startWorker(cfg *Config, env []string) (*worker, error) {
 	if err != nil {
 		closeAll(reqW, respR, stdoutR, stderrR)
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("gothon: python interpreter %q not found; run `gothon sync` to create the project environment: %w", cfg.Python, err)
+			return nil, fmt.Errorf("gothon: python interpreter %q not found; run `gothon sync` to create the project environment: %w", python, err)
 		}
-		return nil, fmt.Errorf("gothon: start %s: %w", cfg.Python, err)
+		return nil, fmt.Errorf("gothon: start %s: %w", python, err)
 	}
 
 	w := &worker{
@@ -84,7 +84,7 @@ func startWorker(cfg *Config, env []string) (*worker, error) {
 		r:      bufio.NewReaderSize(respR, 64<<10),
 		exited: make(chan struct{}),
 	}
-	log := cfg.Logger.With("module", cfg.Module, "pid", w.pid)
+	log := logger.With("pid", w.pid)
 	w.logsDone.Add(2)
 	go w.pump(stdoutR, log.With("stream", "stdout"), false)
 	go w.pump(stderrR, log.With("stream", "stderr"), true)
@@ -128,10 +128,10 @@ func (w *worker) stderrTail() string {
 }
 
 // awaitReady waits until the worker has imported the module and reports in.
-func (w *worker) awaitReady(ctx context.Context, timeout time.Duration, maxFrame int, schemaHash string) error {
+func (w *worker) awaitReady(ctx context.Context, timeout time.Duration, schemaHash string) error {
 	w.out.SetReadDeadline(time.Now().Add(timeout))
 	stop := context.AfterFunc(ctx, w.interrupt)
-	kind, payload, err := frame.Read(w.r, maxFrame)
+	kind, payload, err := frame.Read(w.r, 1<<20)
 	if !stop() {
 		return ctx.Err()
 	}

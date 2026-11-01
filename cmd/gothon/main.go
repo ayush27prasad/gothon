@@ -253,9 +253,9 @@ func runAdd(args []string) error {
 
 	goMod, _ := goModulePath(root)
 	rel, _ := filepath.Rel(root, m.OutDir(root, module))
-	start := fmt.Sprintf("%s.Start(ctx, gothon.Config{})", module)
+	start := fmt.Sprintf("%s.Start(ctx, rt, %s.Config{})", module, module)
 	if *withSettings {
-		start = fmt.Sprintf("%s.Start(ctx, gothon.Config{}, %s.Settings{})", module, module)
+		start = fmt.Sprintf("%s.Start(ctx, rt, %s.Config{}, %s.Settings{})", module, module, module)
 	}
 	fmt.Printf(`
 Next:
@@ -266,6 +266,7 @@ Next:
 Use it from Go:
   import %q
 
+  rt := gothon.NewRuntime(gothon.Defaults{}) // one per program
   client, err := %s
   defer client.Close()
 `, filepath.Join(m.Python, module+".py"), m.Python, goMod+"/"+filepath.ToSlash(rel), start)

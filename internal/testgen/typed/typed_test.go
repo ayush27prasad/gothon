@@ -19,7 +19,8 @@ func start(t *testing.T) *Client {
 	if exec.Command(py, "-c", "import pydantic").Run() != nil {
 		t.Skip("no python with pydantic (set GOTHON_TEST_PYTHON)")
 	}
-	c, err := Start(context.Background(), gothon.Config{Python: py, Dir: "../../../testdata/py", Workers: 1})
+	rt := gothon.NewRuntime(gothon.Defaults{})
+	c, err := Start(context.Background(), rt, Config{Module: gothon.ModuleConfig{Python: py, Dir: "../../../testdata/py", Workers: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,46 +23,27 @@ import (
 	"time"
 
 	"github.com/ayush27prasad/gothon/internal/frame"
-	"github.com/ayush27prasad/gothon/internal/project"
 	"github.com/ayush27prasad/gothon/internal/pyrt"
 )
-
-// Config describes one pool of workers serving one Python module.
-type Config struct {
-	// Root is the project directory holding gothon.json. If empty, $GOTHON_ROOT is
-	// used, then the nearest gothon.json at or above the working directory. The
-	// project supplies the defaults for Python and Dir.
-	Root string
-	// Python is the interpreter. Default: the project's .venv, else "python3".
-	Python string
-	// Dir is added to PYTHONPATH so Module can be imported from it.
-	// Default: the project's Python directory.
-	Dir string
-	// Module is the Python module that defines the tasks, e.g. "ner".
-	Module string
-	// Workers is the number of Python processes. Default runtime.GOMAXPROCS(0).
-	Workers int
-	// StartTimeout bounds how long a worker may take to import Module. Default 60s.
-	StartTimeout time.Duration
-	// MaxFrame caps the size of one response in bytes. Default 64 MiB.
-	MaxFrame int
-	// Env adds KEY=VALUE environment variables for the workers.
-	Env []string
-	// Logger receives worker output and lifecycle events. Default slog.Default().
-	Logger *slog.Logger
-	// SchemaHash, if set, must match the hash of the module's task signatures.
-	// Generated clients set it, so Go types never silently drift from the Python models.
-	SchemaHash string
-}
 
 // SupportPackageIsVersion1 is referenced by generated code, which then fails to
 // compile against a version of this package too old to support it.
 const SupportPackageIsVersion1 = true
 
-// Pool runs calls on a fixed number of Python workers. It is safe for concurrent use.
+// Pool runs calls on the worker processes of one Python module. It is safe for
+// concurrent use. Create one with Runtime.Start.
 type Pool struct {
-	cfg Config
-	env []string
+	rt           *Runtime
+	cfg          ModuleConfig
+	name         string
+	python       string
+	env          []string
+	workers      int
+	startTimeout time.Duration
+	logger       *slog.Logger
+
+	tasksMu sync.Mutex
+	tasks   map[string]*task // resolved per-task settings, created on first use
 
 	mu      sync.Mutex
 	idle    []*worker            // ready for a call
@@ -74,39 +55,39 @@ type Pool struct {
 	wg        sync.WaitGroup // watchers
 }
 
-// Start launches cfg.Workers workers in parallel and returns once all of them have
-// imported the module. ctx bounds startup only; workers live until Close.
-func Start(ctx context.Context, cfg Config) (*Pool, error) {
-	if cfg.Module == "" {
-		return nil, errors.New("gothon: Config.Module is required")
+func startPool(ctx context.Context, rt *Runtime, cfg ModuleConfig) (*Pool, error) {
+	if cfg.Name == "" {
+		return nil, errors.New("gothon: ModuleConfig.Name is required")
 	}
-	if err := cfg.fromProject(); err != nil {
+	python, dir, err := rt.locate(cfg)
+	if err != nil {
 		return nil, err
 	}
-	if cfg.Workers <= 0 {
-		cfg.Workers = runtime.GOMAXPROCS(0)
-	}
-	if cfg.StartTimeout <= 0 {
-		cfg.StartTimeout = 60 * time.Second
-	}
-	if cfg.MaxFrame <= 0 {
-		cfg.MaxFrame = 64 << 20
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
+	d := rt.defaults
+	p := &Pool{
+		rt:           rt,
+		cfg:          cfg,
+		name:         cfg.Name,
+		python:       python,
+		workers:      first(runtime.GOMAXPROCS(0), cfg.Workers, d.Workers),
+		startTimeout: first(60*time.Second, cfg.StartTimeout, d.StartTimeout),
+		logger:       rt.logger.With("module", cfg.Name),
+		tasks:        make(map[string]*task),
+		closed:       make(chan struct{}),
+		live:         make(map[*worker]struct{}),
 	}
 
-	rt, err := pyrt.InstallDefault()
+	pyrtDir, err := pyrt.InstallDefault()
 	if err != nil {
 		return nil, fmt.Errorf("gothon: install python runtime: %w", err)
 	}
-	pythonPath := []string{rt}
-	if cfg.Dir != "" {
-		dir, err := filepath.Abs(cfg.Dir)
+	pythonPath := []string{pyrtDir}
+	if dir != "" {
+		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return nil, err
 		}
-		pythonPath = append(pythonPath, dir)
+		pythonPath = append(pythonPath, abs)
 	}
 	if v := os.Getenv("PYTHONPATH"); v != "" {
 		pythonPath = append(pythonPath, v)
@@ -116,16 +97,13 @@ func Start(ctx context.Context, cfg Config) (*Pool, error) {
 		env = append(env, "GOTHON_SCHEMA_HASH=1")
 	}
 	env = append(env, cfg.Env...)
-	env = append(env, "PYTHONPATH="+strings.Join(pythonPath, string(os.PathListSeparator)))
+	p.env = append(env, "PYTHONPATH="+strings.Join(pythonPath, string(os.PathListSeparator)))
 
-	p := &Pool{
-		cfg:    cfg,
-		env:    env,
-		closed: make(chan struct{}),
-		live:   make(map[*worker]struct{}),
+	if err := rt.reserve(p, p.workers); err != nil {
+		return nil, err
 	}
-	errs := make(chan error, cfg.Workers)
-	for range cfg.Workers {
+	errs := make(chan error, p.workers)
+	for range p.workers {
 		go func() {
 			w, err := p.spawn(ctx)
 			if err == nil {
@@ -134,17 +112,39 @@ func Start(ctx context.Context, cfg Config) (*Pool, error) {
 			errs <- err
 		}()
 	}
-	var first error
-	for range cfg.Workers {
-		if err := <-errs; err != nil && first == nil {
-			first = err
+	var firstErr error
+	for range p.workers {
+		if err := <-errs; err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	if first != nil {
+	if firstErr != nil {
 		p.Close()
-		return nil, first
+		return nil, firstErr
 	}
 	return p, nil
+}
+
+// task holds the resolved settings of one task.
+type task struct {
+	name     string
+	maxFrame int
+}
+
+// task returns the settings for name, resolving them from the config layers on first use.
+func (p *Pool) task(name string) *task {
+	p.tasksMu.Lock()
+	defer p.tasksMu.Unlock()
+	if t, ok := p.tasks[name]; ok {
+		return t
+	}
+	tc, mc, d := p.cfg.Tasks[name], p.cfg, p.rt.defaults
+	t := &task{
+		name:     name,
+		maxFrame: first(64<<20, tc.MaxFrame, mc.MaxFrame, d.MaxFrame),
+	}
+	p.tasks[name] = t
+	return t
 }
 
 // Call runs task with in encoded as JSON and decodes the result into out, which may
@@ -158,12 +158,13 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	if err != nil {
 		return fmt.Errorf("gothon: encode input for %q: %w", task, err)
 	}
+	t := p.task(task)
 	w, err := p.acquire(ctx)
 	if err != nil {
 		return err
 	}
 
-	kind, payload, err := w.roundtrip(ctx, task, input, p.cfg.MaxFrame)
+	kind, payload, err := w.roundtrip(ctx, task, input, t.maxFrame)
 	if err != nil {
 		w.kill() // its watcher starts a replacement
 		switch {
@@ -207,6 +208,7 @@ func (p *Pool) Close() error {
 		p.mu.Unlock()
 	})
 	p.wg.Wait()
+	p.rt.release(p)
 	return nil
 }
 
@@ -271,7 +273,7 @@ func (p *Pool) release(w *worker) {
 
 // spawn starts a worker, registers it, and waits until it is ready.
 func (p *Pool) spawn(ctx context.Context) (*worker, error) {
-	w, err := startWorker(&p.cfg, p.env)
+	w, err := startWorker(p.python, p.name, p.env, p.logger)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +290,7 @@ func (p *Pool) spawn(ctx context.Context) (*worker, error) {
 
 	ready := make(chan struct{})
 	go p.watch(w, ready)
-	if err := w.awaitReady(ctx, p.cfg.StartTimeout, p.cfg.MaxFrame, p.cfg.SchemaHash); err != nil {
+	if err := w.awaitReady(ctx, p.startTimeout, p.cfg.SchemaHash); err != nil {
 		w.kill()
 		return nil, err
 	}
@@ -316,7 +318,7 @@ func (p *Pool) watch(w *worker, ready <-chan struct{}) {
 	if p.isClosed() {
 		return
 	}
-	p.cfg.Logger.Warn("gothon: worker exited, replacing it", "module", p.cfg.Module, "pid", w.pid, "err", err)
+	p.logger.Warn("gothon: worker exited, replacing it", "pid", w.pid, "err", err)
 	p.replace()
 }
 
@@ -332,7 +334,7 @@ func (p *Pool) replace() {
 		if p.isClosed() {
 			return
 		}
-		p.cfg.Logger.Error("gothon: failed to start replacement worker", "module", p.cfg.Module, "err", err, "retry_in", backoff)
+		p.logger.Error("gothon: failed to start replacement worker", "err", err, "retry_in", backoff)
 		select {
 		case <-time.After(backoff):
 		case <-p.closed:
@@ -349,41 +351,4 @@ func (p *Pool) isClosed() bool {
 	default:
 		return false
 	}
-}
-
-// fromProject fills Python and Dir from the project's gothon.json.
-func (cfg *Config) fromProject() error {
-	if cfg.Python != "" && cfg.Dir != "" {
-		return nil
-	}
-	root := cfg.Root
-	if root == "" {
-		root = os.Getenv("GOTHON_ROOT")
-	}
-	var m *project.Manifest
-	var err error
-	if root != "" {
-		m, err = project.Load(root)
-	} else if wd, wdErr := os.Getwd(); wdErr == nil {
-		root, m, err = project.Find(wd)
-		if errors.Is(err, project.ErrNotFound) {
-			// No project: plain library use.
-			if cfg.Python == "" {
-				cfg.Python = "python3"
-			}
-			return nil
-		}
-	} else {
-		err = wdErr
-	}
-	if err != nil {
-		return err
-	}
-	if cfg.Dir == "" {
-		cfg.Dir = m.PythonDir(root)
-	}
-	if cfg.Python == "" {
-		cfg.Python = m.VenvPython(root)
-	}
-	return nil
 }

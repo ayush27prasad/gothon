@@ -28,6 +28,23 @@ type Tasks interface {
 	Touch(ctx context.Context, in string) error
 }
 
+// Config configures the client. Module sets up the worker processes and the
+// defaults for every task; Tasks overrides individual tasks. The most specific
+// non-zero setting wins, falling back to the Runtime's defaults.
+type Config struct {
+	Module gothon.ModuleConfig
+	Tasks  TaskConfigs
+}
+
+// TaskConfigs holds one configuration per task in "typed".
+type TaskConfigs struct {
+	Double    gothon.TaskConfig
+	EchoAny   gothon.TaskConfig
+	Names     gothon.TaskConfig
+	Summarize gothon.TaskConfig
+	Touch     gothon.TaskConfig
+}
+
 // Client runs the tasks on a pool of Python workers.
 type Client struct {
 	pool *gothon.Pool
@@ -35,12 +52,19 @@ type Client struct {
 
 var _ Tasks = (*Client)(nil)
 
-// Start launches workers for "typed". It sets cfg.Module and cfg.SchemaHash;
-// everything else in cfg is passed to gothon.Start.
-func Start(ctx context.Context, cfg gothon.Config) (*Client, error) {
-	cfg.Module = Module
-	cfg.SchemaHash = SchemaHash
-	p, err := gothon.Start(ctx, cfg)
+// Start launches workers for "typed" on rt.
+func Start(ctx context.Context, rt *gothon.Runtime, cfg Config) (*Client, error) {
+	m := cfg.Module
+	m.Name = Module
+	m.SchemaHash = SchemaHash
+	m.Tasks = map[string]gothon.TaskConfig{
+		"double":    cfg.Tasks.Double,
+		"echo_any":  cfg.Tasks.EchoAny,
+		"names":     cfg.Tasks.Names,
+		"summarize": cfg.Tasks.Summarize,
+		"touch":     cfg.Tasks.Touch,
+	}
+	p, err := rt.Start(ctx, m)
 	if err != nil {
 		return nil, err
 	}

@@ -12,12 +12,12 @@ import (
 
 func benchPool(b *testing.B, workers int) *Pool {
 	b.Helper()
-	p, err := Start(context.Background(), Config{
+	rt := NewRuntime(Defaults{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	p, err := rt.Start(context.Background(), ModuleConfig{
 		Python:  testPython(&testing.T{}),
 		Dir:     "testdata/py",
-		Module:  "basic",
+		Name:    "basic",
 		Workers: workers,
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		b.Skip(err)
@@ -77,7 +77,7 @@ func BenchmarkStart(b *testing.B) {
 		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
 			for range b.N {
 				t0 := time.Now()
-				p, err := Start(context.Background(), Config{Python: py, Dir: "testdata/py", Module: "basic", Workers: workers})
+				p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{Python: py, Dir: "testdata/py", Name: "basic", Workers: workers})
 				if err != nil {
 					b.Fatal(err)
 				}

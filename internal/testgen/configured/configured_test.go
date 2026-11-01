@@ -22,17 +22,18 @@ func python(t *testing.T) string {
 }
 
 func TestSettings(t *testing.T) {
-	cfg := gothon.Config{Python: python(t), Dir: "../../../testdata/py", Workers: 1}
+	rt := gothon.NewRuntime(gothon.Defaults{})
+	cfg := Config{Module: gothon.ModuleConfig{Python: python(t), Dir: "../../../testdata/py", Workers: 1}}
 	ctx := context.Background()
 
 	var pe *gothon.PythonError
-	_, err := Start(ctx, cfg, Settings{})
+	_, err := Start(ctx, rt, cfg, Settings{})
 	if !errors.As(err, &pe) || pe.Stage != gothon.StageImport || len(pe.Fields) != 1 || pe.Fields[0].Loc[0] != "api_key" {
 		t.Fatalf("missing api key: want import-stage validation error, got %v", err)
 	}
 
 	retries, debug, region := 5, false, "us"
-	c, err := Start(ctx, cfg, Settings{
+	c, err := Start(ctx, rt, cfg, Settings{
 		APIKey:  "secret",
 		Retries: &retries,
 		Debug:   &debug, // overrides the Python default of True

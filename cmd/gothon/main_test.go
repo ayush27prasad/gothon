@@ -64,7 +64,9 @@ import (
 )
 
 func main() {
-	c, err := greeter.Start(context.Background(), gothon.Config{Workers: 1})
+	rt := gothon.NewRuntime(gothon.Defaults{Workers: 1})
+	defer rt.Close()
+	c, err := greeter.Start(context.Background(), rt, greeter.Config{})
 	if err != nil {
 		panic(err)
 	}
@@ -76,7 +78,7 @@ func main() {
 	fmt.Println(out.Message)
 
 	word := "Hi"
-	s, err := svc.Start(context.Background(), gothon.Config{Workers: 1}, svc.Settings{Greeting: &word})
+	s, err := svc.Start(context.Background(), rt, svc.Config{}, svc.Settings{Greeting: &word})
 	if err != nil {
 		panic(err)
 	}
