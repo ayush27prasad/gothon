@@ -132,10 +132,38 @@ type task struct {
 	timeout  time.Duration // <= 0: none
 	maxQueue int           // <= 0: no limit
 	maxFrame int
+	slots    chan struct{} // MaxConcurrency tokens; nil when unlimited
 
-	waiting atomic.Int64 // calls waiting for a worker
+	waiting atomic.Int64 // calls waiting for a worker or a slot
 	avg     atomic.Int64 // moving average of successful run times, in ns
 	samples atomic.Int64
+}
+
+// enter takes one of the task's concurrency slots, waiting if all are in use.
+// The returned function gives it back.
+func (t *task) enter(ctx context.Context, closed <-chan struct{}) (func(), error) {
+	if t.slots == nil {
+		return func() {}, nil
+	}
+	leave := func() { <-t.slots }
+	select {
+	case t.slots <- struct{}{}:
+		return leave, nil
+	default:
+	}
+	done, err := t.wait()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	select {
+	case t.slots <- struct{}{}:
+		return leave, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-closed:
+		return nil, ErrClosed
+	}
 }
 
 // observe folds a successful run time into the moving average.
@@ -184,6 +212,9 @@ func (p *Pool) task(name string) *task {
 		maxQueue: first(0, tc.MaxQueue, mc.MaxQueue, d.MaxQueue),
 		maxFrame: first(64<<20, tc.MaxFrame, mc.MaxFrame, d.MaxFrame),
 	}
+	if n := tc.MaxConcurrency; n > 0 && n < p.workers {
+		t.slots = make(chan struct{}, n)
+	}
 	p.tasks[name] = t
 	return t
 }
@@ -206,6 +237,11 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 		ctx, cancel = context.WithTimeout(ctx, t.timeout)
 		defer cancel()
 	}
+	leave, err := t.enter(ctx, p.closed)
+	if err != nil {
+		return err
+	}
+	defer leave()
 	w, err := p.acquire(ctx, t)
 	if err != nil {
 		return err

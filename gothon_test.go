@@ -438,3 +438,40 @@ func TestHopelessCallRejected(t *testing.T) {
 		t.Fatal("a rejected call must not cost a worker")
 	}
 }
+
+func TestMaxConcurrency(t *testing.T) {
+	py := testPython(t)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 3,
+		Tasks: map[string]TaskConfig{"spin": {MaxConcurrency: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	t0 := time.Now()
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := p.Call(context.Background(), "spin", 150, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	time.Sleep(30 * time.Millisecond)
+	// spin holds one worker at most, so other tasks still get one right away.
+	t1 := time.Now()
+	if err := p.Call(context.Background(), "pid", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(t1); d > 50*time.Millisecond {
+		t.Fatalf("pid waited %v behind spin", d)
+	}
+	wg.Wait()
+	if d := time.Since(t0); d < 450*time.Millisecond {
+		t.Fatalf("3 spins with MaxConcurrency 1 took %v, want them run one at a time", d)
+	}
+}

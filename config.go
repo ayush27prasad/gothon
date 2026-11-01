@@ -78,6 +78,10 @@ type TaskConfig struct {
 	MaxQueue int
 	// MaxFrame caps the size of one response in bytes. Default 64 MiB.
 	MaxFrame int
+	// MaxConcurrency is how many workers the task may occupy at once, so a slow
+	// task cannot starve the module's other tasks. Calls over the limit wait (and
+	// count toward MaxQueue). Default: no limit beyond the module's workers.
+	MaxConcurrency int
 }
 
 // first returns the first non-zero value, most specific first, or def if all are zero.
