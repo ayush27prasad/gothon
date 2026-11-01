@@ -53,6 +53,10 @@ type Pool struct {
 	waiters list.List            // of chan *worker, first come first served
 	live    map[*worker]struct{} // every running process, so Close can kill them
 
+	starting int // processes not yet ready; guarded by mu
+	restarts atomic.Uint64
+	recycled atomic.Uint64
+
 	draining bool           // Shutdown has begun; guarded by mu
 	inflight sync.WaitGroup // calls in progress, for Shutdown
 
@@ -148,8 +152,26 @@ type task struct {
 	drainTimeout time.Duration
 
 	waiting atomic.Int64 // calls waiting for a worker or a slot
+	running atomic.Int64
 	avg     atomic.Int64 // moving average of successful run times, in ns
 	samples atomic.Int64
+
+	calls, errors, timeouts, rejected atomic.Uint64
+}
+
+// record counts a finished call.
+func (t *task) record(err error) {
+	t.calls.Add(1)
+	if err == nil {
+		return
+	}
+	t.errors.Add(1)
+	switch {
+	case errors.Is(err, ErrBusy):
+		t.rejected.Add(1)
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		t.timeouts.Add(1)
+	}
 }
 
 // enter takes one of the task's concurrency slots, waiting if all are in use.
@@ -239,13 +261,9 @@ func (p *Pool) task(name string) *task {
 // be nil. If ctx ends, or the task's Timeout passes, while Python is still running
 // the task, the worker is killed and replaced, and Call returns the context error.
 // If too many calls are already waiting, Call fails at once with ErrBusy.
-func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
+func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 	if task == "" || len(task) > frame.MaxTaskName {
 		return fmt.Errorf("gothon: task name must be 1-%d bytes, got %q", frame.MaxTaskName, task)
-	}
-	input, err := json.Marshal(in)
-	if err != nil {
-		return fmt.Errorf("gothon: encode input for %q: %w", task, err)
 	}
 	p.mu.Lock()
 	if p.draining || p.isClosed() {
@@ -257,6 +275,11 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	defer p.inflight.Done()
 
 	t := p.task(task)
+	defer func() { t.record(err) }()
+	input, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("gothon: encode input for %q: %w", task, err)
+	}
 	if t.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, t.timeout)
@@ -281,6 +304,8 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 			ErrBusy, task, typical.Round(time.Millisecond), left.Round(time.Millisecond), context.DeadlineExceeded)
 	}
 
+	t.running.Add(1)
+	defer t.running.Add(-1)
 	began := time.Now()
 	var kind byte
 	var payload []byte
@@ -519,12 +544,17 @@ func (p *Pool) spawn(ctx context.Context) (*worker, error) {
 		return nil, ErrClosed
 	}
 	p.live[w] = struct{}{}
+	p.starting++
 	p.wg.Add(1)
 	p.mu.Unlock()
 
 	ready := make(chan struct{})
 	go p.watch(w, ready)
-	if err := w.awaitReady(ctx, p.startTimeout, p.cfg.SchemaHash); err != nil {
+	err = w.awaitReady(ctx, p.startTimeout, p.cfg.SchemaHash)
+	p.mu.Lock()
+	p.starting--
+	p.mu.Unlock()
+	if err != nil {
 		w.kill()
 		return nil, err
 	}
@@ -553,8 +583,10 @@ func (p *Pool) watch(w *worker, ready <-chan struct{}) {
 		return
 	}
 	if w.retired.Load() {
+		p.recycled.Add(1)
 		p.logger.Info("gothon: recycling worker", "pid", w.pid, "jobs", w.jobs)
 	} else {
+		p.restarts.Add(1)
 		p.logger.Warn("gothon: worker exited, replacing it", "pid", w.pid, "err", err)
 	}
 	p.replace()

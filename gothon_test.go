@@ -611,11 +611,60 @@ func TestMaxJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	first := pid(t, p)
-	if pid(t, p) != first || pid(t, p) != first {
+	before := pid(t, p)
+	if pid(t, p) != before || pid(t, p) != before {
 		t.Fatal("worker replaced before MaxJobs")
 	}
-	if pid(t, p) == first {
+	if pid(t, p) == before {
 		t.Fatal("worker not replaced after MaxJobs")
+	}
+	if s := p.Stats(); s.Recycled != 1 || s.Restarts != 0 {
+		t.Fatalf("stats: recycled %d, restarts %d", s.Recycled, s.Restarts)
+	}
+}
+
+func TestStats(t *testing.T) {
+	py := testPython(t)
+	rt := NewRuntime(Defaults{})
+	p, err := rt.Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 2,
+		Tasks: map[string]TaskConfig{"spin": {MaxQueue: 1, MaxConcurrency: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx := context.Background()
+
+	p.Call(ctx, "add", map[string]int{"a": 1, "b": 2}, nil)
+	p.Call(ctx, "fail", "boom", nil)
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	p.Call(short, "spin", 2000, nil) // times out and kills a worker
+	cancel()
+
+	go p.Call(ctx, "spin", 300, nil) // running
+	time.Sleep(50 * time.Millisecond)
+	go p.Call(ctx, "spin", 10, nil) // waiting for the task slot
+	time.Sleep(50 * time.Millisecond)
+	p.Call(ctx, "spin", 10, nil) // rejected
+
+	s := p.Stats()
+	if s.Module != "basic" || s.Workers != 2 || s.Restarts != 1 || s.Waiting != 1 {
+		t.Fatalf("pool stats: %+v", s)
+	}
+	if s.Idle+s.Busy+s.Starting != 2 || s.Busy < 1 {
+		t.Fatalf("worker states: idle %d busy %d starting %d", s.Idle, s.Busy, s.Starting)
+	}
+	if a := s.Tasks["add"]; a.Calls != 1 || a.Errors != 0 || a.AvgTime <= 0 {
+		t.Fatalf("add stats: %+v", a)
+	}
+	if f := s.Tasks["fail"]; f.Calls != 1 || f.Errors != 1 {
+		t.Fatalf("fail stats: %+v", f)
+	}
+	if sp := s.Tasks["spin"]; sp.Timeouts != 1 || sp.Rejected != 1 || sp.Running != 1 || sp.Waiting != 1 {
+		t.Fatalf("spin stats: %+v", sp)
+	}
+	if all := rt.Stats(); len(all) != 1 || all[0].Module != "basic" {
+		t.Fatalf("runtime stats: %+v", all)
 	}
 }
