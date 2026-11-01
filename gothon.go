@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ayush27prasad/gothon/internal/frame"
@@ -125,10 +126,24 @@ func startPool(ctx context.Context, rt *Runtime, cfg ModuleConfig) (*Pool, error
 	return p, nil
 }
 
-// task holds the resolved settings of one task.
+// task holds the resolved settings and live counters of one task.
 type task struct {
 	name     string
+	timeout  time.Duration // <= 0: none
+	maxQueue int           // <= 0: no limit
 	maxFrame int
+
+	waiting atomic.Int64 // calls waiting for a worker
+}
+
+// wait counts a call as waiting, or rejects it with ErrBusy if the queue is full.
+// The returned function stops counting it.
+func (t *task) wait() (func(), error) {
+	if n := t.waiting.Add(1); t.maxQueue > 0 && n > int64(t.maxQueue) {
+		t.waiting.Add(-1)
+		return nil, fmt.Errorf("%w: %d calls to %q are already waiting", ErrBusy, t.maxQueue, t.name)
+	}
+	return func() { t.waiting.Add(-1) }, nil
 }
 
 // task returns the settings for name, resolving them from the config layers on first use.
@@ -141,6 +156,8 @@ func (p *Pool) task(name string) *task {
 	tc, mc, d := p.cfg.Tasks[name], p.cfg, p.rt.defaults
 	t := &task{
 		name:     name,
+		timeout:  first(0, tc.Timeout, mc.Timeout, d.Timeout),
+		maxQueue: first(0, tc.MaxQueue, mc.MaxQueue, d.MaxQueue),
 		maxFrame: first(64<<20, tc.MaxFrame, mc.MaxFrame, d.MaxFrame),
 	}
 	p.tasks[name] = t
@@ -148,8 +165,9 @@ func (p *Pool) task(name string) *task {
 }
 
 // Call runs task with in encoded as JSON and decodes the result into out, which may
-// be nil. If ctx ends while Python is still running the task, the worker is killed
-// and replaced, and Call returns ctx.Err().
+// be nil. If ctx ends, or the task's Timeout passes, while Python is still running
+// the task, the worker is killed and replaced, and Call returns the context error.
+// If too many calls are already waiting, Call fails at once with ErrBusy.
 func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	if task == "" || len(task) > frame.MaxTaskName {
 		return fmt.Errorf("gothon: task name must be 1-%d bytes, got %q", frame.MaxTaskName, task)
@@ -159,7 +177,12 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 		return fmt.Errorf("gothon: encode input for %q: %w", task, err)
 	}
 	t := p.task(task)
-	w, err := p.acquire(ctx)
+	if t.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.timeout)
+		defer cancel()
+	}
+	w, err := p.acquire(ctx, t)
 	if err != nil {
 		return err
 	}
@@ -213,7 +236,7 @@ func (p *Pool) Close() error {
 }
 
 // acquire takes an idle worker, or queues until one is released.
-func (p *Pool) acquire(ctx context.Context) (*worker, error) {
+func (p *Pool) acquire(ctx context.Context, t *task) (*worker, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -228,6 +251,12 @@ func (p *Pool) acquire(ctx context.Context) (*worker, error) {
 		p.mu.Unlock()
 		return w, nil
 	}
+	done, err := t.wait()
+	if err != nil {
+		p.mu.Unlock()
+		return nil, err
+	}
+	defer done()
 	ch := make(chan *worker, 1)
 	e := p.waiters.PushBack(ch)
 	p.mu.Unlock()

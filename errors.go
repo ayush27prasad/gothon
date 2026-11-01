@@ -9,6 +9,9 @@ import (
 var (
 	// ErrClosed is returned by calls on a pool that has been closed.
 	ErrClosed = errors.New("gothon: pool closed")
+	// ErrBusy is returned when a call is rejected because too many calls are
+	// already waiting for a worker. Servers usually map it to 503 or 429.
+	ErrBusy = errors.New("gothon: busy")
 	// ErrWorkerExited is returned when the worker process died while running a call.
 	ErrWorkerExited = errors.New("gothon: worker exited")
 	// ErrSchemaMismatch is returned by Start when the Python tasks no longer match

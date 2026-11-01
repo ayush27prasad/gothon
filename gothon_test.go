@@ -346,3 +346,71 @@ func TestSettingsValidationAtImport(t *testing.T) {
 		t.Fatalf("key_length = %d, %v", n, err)
 	}
 }
+
+func TestTimeoutLayers(t *testing.T) {
+	py := testPython(t)
+	rt := NewRuntime(Defaults{Timeout: 100 * time.Millisecond})
+	p, err := rt.Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 1,
+		Tasks: map[string]TaskConfig{"spin": {Timeout: -1}}, // no timeout for spin
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	// The runtime default applies to a context without a deadline.
+	t0 := time.Now()
+	if err := p.Call(context.Background(), "echo", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Call(context.Background(), "spin", 300, nil); err != nil {
+		t.Fatalf("task override of no timeout: %v", err)
+	}
+	if time.Since(t0) < 300*time.Millisecond {
+		t.Fatal("spin did not run")
+	}
+
+	q, err := rt.Start(context.Background(), ModuleConfig{Python: py, Dir: "testdata/py", Name: "basic", Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	t0 = time.Now()
+	if err := q.Call(context.Background(), "spin", 2000, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runtime default timeout: %v", err)
+	}
+	if d := time.Since(t0); d > time.Second {
+		t.Fatalf("timeout took %v", d)
+	}
+}
+
+func TestMaxQueue(t *testing.T) {
+	py := testPython(t)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "basic", Workers: 1,
+		Tasks: map[string]TaskConfig{"spin": {MaxQueue: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	go p.Call(context.Background(), "spin", 400, nil) // running
+	time.Sleep(50 * time.Millisecond)
+	go p.Call(context.Background(), "spin", 10, nil) // waiting: fills the queue
+	time.Sleep(50 * time.Millisecond)
+
+	t0 := time.Now()
+	err = p.Call(context.Background(), "spin", 10, nil)
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("want ErrBusy, got %v", err)
+	}
+	if d := time.Since(t0); d > 20*time.Millisecond {
+		t.Fatalf("ErrBusy should be immediate, took %v", d)
+	}
+	// Other tasks have no limit and still queue normally.
+	if err := p.Call(context.Background(), "pid", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -27,6 +27,8 @@ type Defaults struct {
 	StartTimeout time.Duration
 
 	// Task defaults; see TaskConfig.
+	Timeout  time.Duration
+	MaxQueue int
 	MaxFrame int
 }
 
@@ -52,6 +54,8 @@ type ModuleConfig struct {
 	StartTimeout time.Duration
 
 	// Task defaults for this module; see TaskConfig.
+	Timeout  time.Duration
+	MaxQueue int
 	MaxFrame int
 
 	// Tasks configures individual tasks by name, overriding the module's defaults.
@@ -60,6 +64,15 @@ type ModuleConfig struct {
 
 // TaskConfig configures calls to one task.
 type TaskConfig struct {
+	// Timeout bounds each call: it is the deadline when the caller's context has
+	// none, and caps a later one. A call that runs out of time while Python is
+	// working kills that worker. Negative means no timeout. Default: none.
+	Timeout time.Duration
+	// MaxQueue is how many calls of the task may wait for a worker. A call beyond
+	// that fails at once with ErrBusy, so an overloaded server can shed load
+	// instead of queueing until every request times out. Negative means no limit.
+	// Default: no limit.
+	MaxQueue int
 	// MaxFrame caps the size of one response in bytes. Default 64 MiB.
 	MaxFrame int
 }
