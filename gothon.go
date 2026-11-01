@@ -134,6 +134,30 @@ type task struct {
 	maxFrame int
 
 	waiting atomic.Int64 // calls waiting for a worker
+	avg     atomic.Int64 // moving average of successful run times, in ns
+	samples atomic.Int64
+}
+
+// observe folds a successful run time into the moving average.
+func (t *task) observe(d time.Duration) {
+	if t.samples.Add(1) == 1 {
+		t.avg.Store(int64(d))
+		return
+	}
+	old := t.avg.Load()
+	t.avg.Store(old + (int64(d)-old)/8)
+}
+
+// hopeless reports whether a call with ctx's deadline would most likely run out of
+// time inside Python, where running out of time costs a worker. It only judges
+// once the task has a few run times to go on.
+func (t *task) hopeless(ctx context.Context) (left, typical time.Duration, ok bool) {
+	dl, has := ctx.Deadline()
+	if !has || t.samples.Load() < 5 {
+		return 0, 0, false
+	}
+	left, typical = time.Until(dl), time.Duration(t.avg.Load())
+	return left, typical, left < typical/2
 }
 
 // wait counts a call as waiting, or rejects it with ErrBusy if the queue is full.
@@ -186,7 +210,13 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 	if err != nil {
 		return err
 	}
+	if left, typical, hopeless := t.hopeless(ctx); hopeless {
+		p.release(w)
+		return fmt.Errorf("%w: %q usually takes %v but only %v is left: %w",
+			ErrBusy, task, typical.Round(time.Millisecond), left.Round(time.Millisecond), context.DeadlineExceeded)
+	}
 
+	began := time.Now()
 	kind, payload, err := w.roundtrip(ctx, task, input, t.maxFrame)
 	if err != nil {
 		w.kill() // its watcher starts a replacement
@@ -205,6 +235,7 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) error {
 
 	switch kind {
 	case frame.OK:
+		t.observe(time.Since(began))
 		if out == nil {
 			return nil
 		}

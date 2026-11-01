@@ -414,3 +414,27 @@ func TestMaxQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHopelessCallRejected(t *testing.T) {
+	p, _ := start(t, "basic", 1)
+	for range 5 {
+		if err := p.Call(context.Background(), "spin", 200, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := pid(t, p)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	err := p.Call(ctx, "spin", 200, nil)
+	if !errors.Is(err, ErrBusy) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want ErrBusy and DeadlineExceeded, got %v", err)
+	}
+	if d := time.Since(t0); d > 20*time.Millisecond {
+		t.Fatalf("rejection should be immediate, took %v", d)
+	}
+	if after := pid(t, p); after != before {
+		t.Fatal("a rejected call must not cost a worker")
+	}
+}
