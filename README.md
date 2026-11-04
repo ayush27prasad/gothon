@@ -245,7 +245,7 @@ When a Go handler calls Python on a request path:
 
 - **Set `Timeout` and `MaxQueue`,** and map `gothon.ErrBusy` to 503. Under a spike,
   extra requests then fail fast instead of queueing until all of them time out.
-  A call whose remaining deadline is under half the task's usual run time is
+  A call whose remaining deadline is under the task's usual run time is
   rejected before it reaches Python, so it never costs a worker.
 - **Use `OnTimeout: gothon.Drain` for modules that are slow to start,** such as
   those loading large models. A timeout then returns its error at once without

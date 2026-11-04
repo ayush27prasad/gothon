@@ -50,7 +50,7 @@ type Pool struct {
 
 	mu      sync.Mutex
 	idle    []*worker            // ready for a call
-	waiters list.List            // of chan *worker, first come first served
+	waiters list.List            // of *waiter, first come first served
 	live    map[*worker]struct{} // every running process, so Close can kill them
 
 	starting int // processes not yet ready; guarded by mu
@@ -214,13 +214,16 @@ func (t *task) observe(d time.Duration) {
 // hopeless reports whether a call with ctx's deadline would most likely run out of
 // time inside Python, where running out of time costs a worker. It only judges
 // once the task has a few run times to go on.
-func (t *task) hopeless(ctx context.Context) (left, typical time.Duration, ok bool) {
+func (t *task) hopeless(ctx context.Context) bool {
 	dl, has := ctx.Deadline()
-	if !has || t.samples.Load() < 5 {
-		return 0, 0, false
-	}
-	left, typical = time.Until(dl), time.Duration(t.avg.Load())
-	return left, typical, left < typical/2
+	return has && t.samples.Load() >= 5 && time.Until(dl) < time.Duration(t.avg.Load())
+}
+
+// tooLate is the error for a call rejected as hopeless.
+func (t *task) tooLate(ctx context.Context) error {
+	dl, _ := ctx.Deadline()
+	return fmt.Errorf("%w: %q usually takes %v but only %v is left: %w", ErrBusy, t.name,
+		time.Duration(t.avg.Load()).Round(time.Millisecond), time.Until(dl).Round(time.Millisecond), context.DeadlineExceeded)
 }
 
 // wait counts a call as waiting, or rejects it with ErrBusy if the queue is full.
@@ -298,10 +301,9 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 	if err != nil {
 		return err
 	}
-	if left, typical, hopeless := t.hopeless(ctx); hopeless {
+	if t.hopeless(ctx) {
 		p.release(w)
-		return fmt.Errorf("%w: %q usually takes %v but only %v is left: %w",
-			ErrBusy, task, typical.Round(time.Millisecond), left.Round(time.Millisecond), context.DeadlineExceeded)
+		return t.tooLate(ctx)
 	}
 
 	t.running.Add(1)
@@ -474,30 +476,42 @@ func (p *Pool) acquire(ctx context.Context, t *task) (*worker, error) {
 		return nil, err
 	}
 	defer done()
-	ch := make(chan *worker, 1)
-	e := p.waiters.PushBack(ch)
+	wt := &waiter{ch: make(chan *worker, 1), ctx: ctx, t: t}
+	e := p.waiters.PushBack(wt)
 	p.mu.Unlock()
 
 	select {
-	case w := <-ch:
+	case w := <-wt.ch:
+		if w == nil {
+			return nil, t.tooLate(ctx)
+		}
 		return w, nil
 	case <-ctx.Done():
-		p.leave(e, ch)
+		p.leave(e, wt)
 		return nil, ctx.Err()
 	case <-p.closed:
-		p.leave(e, ch)
+		p.leave(e, wt)
 		return nil, ErrClosed
 	}
 }
 
+// waiter is a call queued for a worker.
+type waiter struct {
+	ch  chan *worker // receives a worker, or nil if the call was rejected as hopeless
+	ctx context.Context
+	t   *task
+}
+
 // leave removes a waiter that gave up, passing on a worker it was handed meanwhile.
-func (p *Pool) leave(e *list.Element, ch chan *worker) {
+func (p *Pool) leave(e *list.Element, wt *waiter) {
 	p.mu.Lock()
 	p.waiters.Remove(e)
 	p.mu.Unlock()
 	select {
-	case w := <-ch:
-		p.release(w)
+	case w := <-wt.ch:
+		if w != nil {
+			p.release(w)
+		}
 	default:
 	}
 }
@@ -515,16 +529,22 @@ func (p *Pool) done(w *worker) {
 	time.AfterFunc(5*time.Second, w.kill) // in case it does not
 }
 
-// release hands a worker to the longest waiting caller, or marks it idle.
+// release hands a worker to the longest waiting caller, or marks it idle. Waiters
+// with too little time left to finish are rejected on the way, so that under
+// overload a worker never goes to a call that would time out inside Python.
 func (p *Pool) release(w *worker) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.isClosed() || w.isExited() {
 		return // Close kills it, or its watcher is replacing it
 	}
-	if e := p.waiters.Front(); e != nil {
-		p.waiters.Remove(e)
-		e.Value.(chan *worker) <- w
+	for e := p.waiters.Front(); e != nil; e = p.waiters.Front() {
+		wt := p.waiters.Remove(e).(*waiter)
+		if wt.t.hopeless(wt.ctx) {
+			wt.ch <- nil
+			continue
+		}
+		wt.ch <- w
 		return
 	}
 	p.idle = append(p.idle, w)

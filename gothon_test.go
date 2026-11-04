@@ -444,6 +444,41 @@ func TestHopelessCallRejected(t *testing.T) {
 	}
 }
 
+func TestLateWaiterRejected(t *testing.T) {
+	p, _ := start(t, "basic", 1)
+	for range 5 {
+		if err := p.Call(context.Background(), "spin", 50, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	go p.Call(context.Background(), "spin", 50, nil) // occupies the worker
+	time.Sleep(5 * time.Millisecond)
+	behind := make(chan error, 1)
+	go func() {
+		time.Sleep(5 * time.Millisecond) // queues after the late call
+		behind <- p.Call(context.Background(), "pid", nil, nil)
+	}()
+
+	// When the worker frees up, this call has less time left than spin takes:
+	// it is rejected then, and the worker goes to the next waiter.
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	err := p.Call(ctx, "spin", 50, nil)
+	if !errors.Is(err, ErrBusy) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want ErrBusy and DeadlineExceeded, got %v", err)
+	}
+	if d := time.Since(t0); d > 65*time.Millisecond {
+		t.Fatalf("rejected after %v, want as soon as the worker was free", d)
+	}
+	if err := <-behind; err != nil {
+		t.Fatal(err)
+	}
+	if r := p.Stats().Restarts; r != 0 {
+		t.Fatalf("%d restarts", r)
+	}
+}
+
 func TestMaxConcurrency(t *testing.T) {
 	py := testPython(t)
 	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{

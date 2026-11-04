@@ -83,8 +83,9 @@ type TaskConfig struct {
 	// Timeout bounds each call: it is the deadline when the caller's context has
 	// none, and caps a later one. A call that runs out of time while Python is
 	// working kills that worker. To avoid that, a call whose remaining time is less
-	// than half the task's typical run time is rejected before it reaches Python,
-	// with an error matching both ErrBusy and context.DeadlineExceeded.
+	// than the task's typical run time is rejected before it reaches Python, as soon
+	// as a worker would have gone to it, with an error matching both ErrBusy and
+	// context.DeadlineExceeded.
 	// Negative means no timeout. Default: none.
 	Timeout time.Duration
 	// MaxQueue is how many calls of the task may wait for a worker. A call beyond
