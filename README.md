@@ -92,6 +92,10 @@ out, err := client.Greet(ctx, greeter.GreetIn{Name: "gopher"})
 Add Python dependencies with `uv add --project python <package>`. After changing
 a task or model, run `go tool gothon gen`.
 
+For a complete service, see [examples/csvstats](examples/csvstats): an HTTP API
+that describes CSV files with pandas, with timeouts, load shedding, memory
+limits and graceful shutdown.
+
 ## Writing tasks
 
 These conventions are what the generated code relies on. They are written so a

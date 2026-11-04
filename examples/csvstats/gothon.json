@@ -1,0 +1,7 @@
+{
+  "python": "python",
+  "out": "internal/py",
+  "modules": [
+    "stats"
+  ]
+}

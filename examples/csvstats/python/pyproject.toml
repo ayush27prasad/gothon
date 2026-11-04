@@ -1,0 +1,11 @@
+[project]
+name = "csvstats-python"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.3.3",
+    "pydantic>=2.7",
+]
+
+[tool.uv]
+package = false

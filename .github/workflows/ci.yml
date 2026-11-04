@@ -32,3 +32,10 @@ jobs:
           GOTHON_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python
           GOTHON_TEST_CLI: "1"
         run: go test -race ./...
+      - name: example
+        working-directory: examples/csvstats
+        run: |
+          uv sync --project python --frozen
+          go run github.com/ayush27prasad/gothon/cmd/gothon gen -check
+          go vet ./...
+          go test ./...
