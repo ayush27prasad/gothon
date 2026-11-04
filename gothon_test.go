@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -690,6 +691,60 @@ func TestMaxMemory(t *testing.T) {
 	}
 	if s := p.Stats(); s.Recycled != 1 || s.Restarts != 0 {
 		t.Fatalf("stats: recycled %d, restarts %d", s.Recycled, s.Restarts)
+	}
+}
+
+func TestHooks(t *testing.T) {
+	py := testPython(t)
+	var (
+		mu      sync.Mutex
+		calls   []CallEvent
+		workers []WorkerEvent
+	)
+	rt := NewRuntime(Defaults{Hooks: Hooks{
+		OnCall:   func(e CallEvent) { mu.Lock(); calls = append(calls, e); mu.Unlock() },
+		OnWorker: func(e WorkerEvent) { mu.Lock(); workers = append(workers, e); mu.Unlock() },
+	}})
+	p, err := rt.Start(context.Background(), ModuleConfig{Python: py, Dir: "testdata/py", Name: "basic", Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	p.Call(context.Background(), "spin", 20, nil)
+	p.Call(context.Background(), "fail", "boom", nil)
+	p.Call(context.Background(), "crash", nil, nil)
+	pid(t, p) // waits for the replacement
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 4 {
+		t.Fatalf("%d call events, want 4", len(calls))
+	}
+	if c := calls[0]; c.Module != "basic" || c.Task != "spin" || c.Err != nil || c.Run < 20*time.Millisecond {
+		t.Fatalf("spin: %+v", c)
+	}
+	var pe *PythonError
+	if c := calls[1]; c.Task != "fail" || !errors.As(c.Err, &pe) {
+		t.Fatalf("fail: %+v", c)
+	}
+	if c := calls[2]; c.Task != "crash" || !errors.Is(c.Err, ErrWorkerExited) {
+		t.Fatalf("crash: %+v", c)
+	}
+	if c := calls[3]; c.Wait == 0 {
+		t.Fatalf("the call after the crash should have waited for the replacement: %+v", c)
+	}
+	var states []WorkerState
+	for _, e := range workers {
+		states = append(states, e.State)
+		if e.PID == 0 || e.Module != "basic" {
+			t.Fatalf("worker event: %+v", e)
+		}
+	}
+	if !slices.Equal(states, []WorkerState{WorkerStarted, WorkerExited, WorkerStarted}) {
+		t.Fatalf("worker events %v", states)
+	}
+	if workers[0].Took <= 0 || workers[1].Jobs != 2 || workers[1].Err == nil {
+		t.Fatalf("worker events: %+v", workers)
 	}
 }
 

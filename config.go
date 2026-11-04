@@ -18,6 +18,8 @@ type Defaults struct {
 	Root string
 	// Logger receives worker output and lifecycle events. Default slog.Default().
 	Logger *slog.Logger
+	// Hooks receive every call and worker event, e.g. for metrics.
+	Hooks Hooks
 	// MaxWorkers caps the Python processes of all modules together. Starting a
 	// module that would exceed it fails. Default: no cap.
 	MaxWorkers int

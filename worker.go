@@ -30,7 +30,7 @@ type worker struct {
 	r      *bufio.Reader // buffered reads from out
 	buf    []byte        // reused request buffer
 	exited chan struct{} // closed once the process has exited
-	jobs   int           // calls served; touched only by the caller holding the worker
+	jobs   atomic.Int64  // calls served
 
 	retired   atomic.Bool // asked to exit after MaxJobs or MaxMemory
 	overLimit []byte      // the worker's Retire notice: it is over MaxMemory

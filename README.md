@@ -272,6 +272,42 @@ srv.Shutdown(shutdownCtx) // stop HTTP first, so no new calls arrive
 rt.Shutdown(shutdownCtx)
 ```
 
+### Metrics
+
+`Defaults.Hooks` reports every call (task, time queued, time in Python, error)
+and every worker start, exit and recycle. gothon depends on no metrics library;
+wire the hooks to the one you use. With Prometheus:
+
+```go
+calls := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	Name: "gothon_call_seconds", Buckets: prometheus.ExponentialBuckets(0.0005, 2, 16),
+}, []string{"module", "task", "outcome"})
+workers := prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "gothon_worker_events_total",
+}, []string{"module", "state"})
+prometheus.MustRegister(calls, workers)
+
+rt := gothon.NewRuntime(gothon.Defaults{Hooks: gothon.Hooks{
+	OnCall: func(e gothon.CallEvent) {
+		outcome := "ok"
+		switch {
+		case errors.Is(e.Err, gothon.ErrBusy):
+			outcome = "rejected"
+		case errors.Is(e.Err, context.DeadlineExceeded):
+			outcome = "timeout"
+		case e.Err != nil:
+			outcome = "error"
+		}
+		calls.WithLabelValues(e.Module, e.Task, outcome).Observe((e.Wait + e.Run).Seconds())
+	},
+	OnWorker: func(e gothon.WorkerEvent) {
+		workers.WithLabelValues(e.Module, string(e.State)).Inc()
+	},
+}})
+```
+
+Hooks run on gothon's goroutines, so keep them fast.
+
 ## CLI
 
 | Command | |

@@ -283,7 +283,19 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 	defer p.inflight.Done()
 
 	t := p.task(task)
-	defer func() { t.record(err) }()
+	start := time.Now()
+	var began time.Time // when the call reached a worker
+	var run time.Duration
+	defer func() {
+		t.record(err)
+		if on := p.rt.defaults.Hooks.OnCall; on != nil {
+			e := CallEvent{Module: p.name, Task: task, Wait: time.Since(start), Run: run, Err: err}
+			if !began.IsZero() {
+				e.Wait = began.Sub(start)
+			}
+			on(e)
+		}
+	}()
 	input, err := json.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("gothon: encode input for %q: %w", task, err)
@@ -313,7 +325,7 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 
 	t.running.Add(1)
 	defer t.running.Add(-1)
-	began := time.Now()
+	began = time.Now()
 	var kind byte
 	var payload []byte
 	if t.onTimeout == Drain && ctx.Done() != nil {
@@ -327,6 +339,7 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 		case r := <-res:
 			kind, payload, err = r.kind, r.payload, r.err
 		case <-ctx.Done():
+			run = time.Since(began)
 			go p.drain(w, t, res, leave)
 			leave = nil // the drain holds the slot until the task finishes
 			return ctx.Err()
@@ -334,6 +347,7 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 	} else {
 		kind, payload, err = w.roundtrip(ctx, task, input, t.maxFrame)
 	}
+	run = time.Since(began)
 	if err != nil {
 		w.kill() // its watcher starts a replacement
 		switch {
@@ -351,7 +365,7 @@ func (p *Pool) Call(ctx context.Context, task string, in, out any) (err error) {
 
 	switch kind {
 	case frame.OK:
-		t.observe(time.Since(began))
+		t.observe(run)
 		if out == nil {
 			return nil
 		}
@@ -524,8 +538,7 @@ func (p *Pool) leave(e *list.Element, wt *waiter) {
 // done returns a worker after a completed call, or retires it once it has
 // served MaxJobs calls or gone over MaxMemory.
 func (p *Pool) done(w *worker) {
-	w.jobs++
-	if (p.maxJobs <= 0 || w.jobs < p.maxJobs) && w.overLimit == nil {
+	if jobs := w.jobs.Add(1); (p.maxJobs <= 0 || jobs < int64(p.maxJobs)) && w.overLimit == nil {
 		p.release(w)
 		return
 	}
@@ -557,8 +570,10 @@ func (p *Pool) release(w *worker) {
 
 // spawn starts a worker, registers it, and waits until it is ready.
 func (p *Pool) spawn(ctx context.Context) (*worker, error) {
+	t0 := time.Now()
 	w, err := startWorker(p.python, p.name, p.env, p.logger)
 	if err != nil {
+		p.workerEvent(WorkerEvent{State: WorkerStartFailed, Err: err})
 		return nil, err
 	}
 	p.mu.Lock()
@@ -581,10 +596,19 @@ func (p *Pool) spawn(ctx context.Context) (*worker, error) {
 	p.mu.Unlock()
 	if err != nil {
 		w.kill()
+		p.workerEvent(WorkerEvent{PID: w.pid, State: WorkerStartFailed, Err: err})
 		return nil, err
 	}
 	close(ready)
+	p.workerEvent(WorkerEvent{PID: w.pid, State: WorkerStarted, Took: time.Since(t0)})
 	return w, nil
+}
+
+func (p *Pool) workerEvent(e WorkerEvent) {
+	if on := p.rt.defaults.Hooks.OnWorker; on != nil {
+		e.Module = p.name
+		on(e)
+	}
 }
 
 // watch waits for a worker to exit, for any reason, and replaces it if it was serving.
@@ -612,14 +636,16 @@ func (p *Pool) watch(w *worker, ready <-chan struct{}) {
 		if w.overLimit != nil {
 			var m struct{ RSS, Limit int }
 			json.Unmarshal(w.overLimit, &m)
-			p.logger.Info("gothon: recycling worker over MaxMemory", "pid", w.pid, "jobs", w.jobs,
+			p.logger.Info("gothon: recycling worker over MaxMemory", "pid", w.pid, "jobs", w.jobs.Load(),
 				"rss_mib", m.RSS>>20, "limit_mib", m.Limit>>20)
 		} else {
-			p.logger.Info("gothon: recycling worker", "pid", w.pid, "jobs", w.jobs)
+			p.logger.Info("gothon: recycling worker", "pid", w.pid, "jobs", w.jobs.Load())
 		}
+		p.workerEvent(WorkerEvent{PID: w.pid, State: WorkerRecycled, Jobs: int(w.jobs.Load())})
 	} else {
 		p.restarts.Add(1)
 		p.logger.Warn("gothon: worker exited, replacing it", "pid", w.pid, "err", err)
+		p.workerEvent(WorkerEvent{PID: w.pid, State: WorkerExited, Jobs: int(w.jobs.Load()), Err: err})
 	}
 	p.replace()
 }
