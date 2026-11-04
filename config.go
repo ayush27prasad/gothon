@@ -27,6 +27,7 @@ type Defaults struct {
 	ThreadsPerWorker int
 	StartTimeout     time.Duration
 	MaxJobs          int
+	MaxMemory        int
 
 	// Task defaults; see TaskConfig.
 	Timeout      time.Duration
@@ -66,6 +67,12 @@ type ModuleConfig struct {
 	// memory growth of Python libraries that leak. The worker exits cleanly and a
 	// new one starts, as after a crash. Default: never.
 	MaxJobs int
+	// MaxMemory replaces a worker once its resident memory exceeds this many bytes,
+	// checked after each call: the call still succeeds, then the worker exits
+	// cleanly and a new one starts. Python rarely returns memory to the system, so
+	// one large call or a slow leak otherwise keeps a worker big for good. On
+	// macOS, peak rather than current memory is checked. Default: no limit.
+	MaxMemory int
 
 	// Task defaults for this module; see TaskConfig.
 	Timeout      time.Duration

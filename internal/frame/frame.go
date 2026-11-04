@@ -17,6 +17,7 @@ const (
 	Ready   byte = 2 // Python → Go: module imported, JSON worker info
 	OK      byte = 3 // Python → Go: JSON output
 	Error   byte = 4 // Python → Go: JSON error
+	Retire  byte = 5 // Python → Go, before a reply: over its memory limit; JSON {"rss", "limit"}
 )
 
 // MaxTaskName is the longest task name a Request frame can carry.

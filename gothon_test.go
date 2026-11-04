@@ -661,6 +661,38 @@ func TestMaxJobs(t *testing.T) {
 	}
 }
 
+func TestMaxMemory(t *testing.T) {
+	py := testPython(t)
+	p, err := NewRuntime(Defaults{}).Start(context.Background(), ModuleConfig{
+		Python: py, Dir: "testdata/py", Name: "leak", Workers: 1, MaxMemory: 200 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	grow := func(mb int) int {
+		t.Helper()
+		var n int
+		if err := p.Call(context.Background(), "grow", mb, &n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := grow(1)
+	if grow(1) != before {
+		t.Fatal("worker replaced under MaxMemory")
+	}
+	if grow(250) != before {
+		t.Fatal("the call that crosses MaxMemory should still be served")
+	}
+	if grow(1) == before {
+		t.Fatal("worker not replaced after crossing MaxMemory")
+	}
+	if s := p.Stats(); s.Recycled != 1 || s.Restarts != 0 {
+		t.Fatalf("stats: recycled %d, restarts %d", s.Recycled, s.Restarts)
+	}
+}
+
 func TestStats(t *testing.T) {
 	py := testPython(t)
 	rt := NewRuntime(Defaults{})

@@ -43,6 +43,7 @@ type Pool struct {
 	workers      int
 	startTimeout time.Duration
 	maxJobs      int
+	maxMemory    int
 	logger       *slog.Logger
 
 	tasksMu sync.Mutex
@@ -82,6 +83,7 @@ func startPool(ctx context.Context, rt *Runtime, cfg ModuleConfig) (*Pool, error
 		workers:      first(runtime.GOMAXPROCS(0), cfg.Workers, d.Workers),
 		startTimeout: first(60*time.Second, cfg.StartTimeout, d.StartTimeout),
 		maxJobs:      first(0, cfg.MaxJobs, d.MaxJobs),
+		maxMemory:    first(0, cfg.MaxMemory, d.MaxMemory),
 		logger:       rt.logger.With("module", cfg.Name),
 		tasks:        make(map[string]*task),
 		closed:       make(chan struct{}),
@@ -107,6 +109,9 @@ func startPool(ctx context.Context, rt *Runtime, cfg ModuleConfig) (*Pool, error
 	threads := strconv.Itoa(first(max(1, runtime.GOMAXPROCS(0)/p.workers), cfg.ThreadsPerWorker, d.ThreadsPerWorker))
 	for _, v := range []string{"OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"} {
 		env = append(env, v+"="+threads)
+	}
+	if p.maxMemory > 0 {
+		env = append(env, "GOTHON_MAX_MEMORY="+strconv.Itoa(p.maxMemory))
 	}
 	if cfg.SchemaHash != "" {
 		env = append(env, "GOTHON_SCHEMA_HASH=1")
@@ -517,10 +522,10 @@ func (p *Pool) leave(e *list.Element, wt *waiter) {
 }
 
 // done returns a worker after a completed call, or retires it once it has
-// served MaxJobs calls.
+// served MaxJobs calls or gone over MaxMemory.
 func (p *Pool) done(w *worker) {
 	w.jobs++
-	if p.maxJobs <= 0 || w.jobs < p.maxJobs {
+	if (p.maxJobs <= 0 || w.jobs < p.maxJobs) && w.overLimit == nil {
 		p.release(w)
 		return
 	}
@@ -604,7 +609,14 @@ func (p *Pool) watch(w *worker, ready <-chan struct{}) {
 	}
 	if w.retired.Load() {
 		p.recycled.Add(1)
-		p.logger.Info("gothon: recycling worker", "pid", w.pid, "jobs", w.jobs)
+		if w.overLimit != nil {
+			var m struct{ RSS, Limit int }
+			json.Unmarshal(w.overLimit, &m)
+			p.logger.Info("gothon: recycling worker over MaxMemory", "pid", w.pid, "jobs", w.jobs,
+				"rss_mib", m.RSS>>20, "limit_mib", m.Limit>>20)
+		} else {
+			p.logger.Info("gothon: recycling worker", "pid", w.pid, "jobs", w.jobs)
+		}
 	} else {
 		p.restarts.Add(1)
 		p.logger.Warn("gothon: worker exited, replacing it", "pid", w.pid, "err", err)

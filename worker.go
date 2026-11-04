@@ -19,7 +19,7 @@ import (
 	"github.com/ayush27prasad/gothon/internal/frame"
 )
 
-const protocolVersion = 1
+const protocolVersion = 2
 
 // worker is one Python process. Requests go to its fd 3 and replies come back on fd 4.
 type worker struct {
@@ -32,7 +32,8 @@ type worker struct {
 	exited chan struct{} // closed once the process has exited
 	jobs   int           // calls served; touched only by the caller holding the worker
 
-	retired atomic.Bool // asked to exit after MaxJobs
+	retired   atomic.Bool // asked to exit after MaxJobs or MaxMemory
+	overLimit []byte      // the worker's Retire notice: it is over MaxMemory
 
 	killOnce sync.Once
 	logsDone sync.WaitGroup
@@ -178,6 +179,10 @@ func (w *worker) roundtrip(ctx context.Context, task string, input []byte, maxFr
 	var payload []byte
 	if err == nil {
 		kind, payload, err = frame.Read(w.r, maxFrame)
+		if err == nil && kind == frame.Retire {
+			w.overLimit = payload
+			kind, payload, err = frame.Read(w.r, maxFrame)
+		}
 	}
 	if !stop() && err == nil {
 		err = ctx.Err()

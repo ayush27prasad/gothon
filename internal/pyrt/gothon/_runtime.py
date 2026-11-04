@@ -14,8 +14,8 @@ import sys
 import traceback
 from typing import Any
 
-REQUEST, READY, OK, ERROR = 1, 2, 3, 4
-PROTOCOL = 1
+REQUEST, READY, OK, ERROR, RETIRE = 1, 2, 3, 4, 5
+PROTOCOL = 2
 
 _header = struct.Struct(">IB")
 _ValidationError: Any = None
@@ -59,6 +59,19 @@ def _error(stage: str, e: BaseException) -> bytes:
             tb = tb.tb_next
         out["traceback"] = "".join(traceback.format_exception(type(e), e, tb))
     return json.dumps(out).encode()
+
+
+def _rss_reader() -> Any:
+    """Return a function giving this process's resident memory in bytes."""
+    try:
+        fd = os.open("/proc/self/statm", os.O_RDONLY)
+        page = os.sysconf("SC_PAGE_SIZE")
+        return lambda: int(os.pread(fd, 64, 0).split()[1]) * page
+    except OSError:  # no /proc, e.g. macOS: use the peak instead
+        import resource
+
+        scale = 1 if sys.platform == "darwin" else 1024
+        return lambda: resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * scale
 
 
 def _call(t: Any, body: bytes) -> tuple[int, bytes]:
@@ -123,6 +136,9 @@ def main() -> int:
             return 1
     send(READY, json.dumps(info).encode())
 
+    limit = int(os.environ.get("GOTHON_MAX_MEMORY") or 0)
+    rss = _rss_reader() if limit > 0 else None
+
     while True:
         head = rin.read(5)
         if len(head) < 5:
@@ -138,7 +154,11 @@ def main() -> int:
             err = {"stage": "dispatch", "type": "TaskNotFound", "message": f"no task named {name!r}"}
             send(ERROR, json.dumps(err).encode())
             continue
-        send(*_call(t, frame[1 + n :]))
+        reply = _call(t, frame[1 + n :])
+        if rss is not None and (used := rss()) > limit:
+            # Go retires this worker once it has the reply.
+            send(RETIRE, json.dumps({"rss": used, "limit": limit}).encode())
+        send(*reply)
 
 
 if __name__ == "__main__":

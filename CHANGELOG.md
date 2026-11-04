@@ -26,7 +26,7 @@ produced them, and a stale client refuses to start.
 - Per-call `Timeout`, `MaxQueue` with `ErrBusy`, and rejection of calls that
   cannot finish before their deadline.
 - `MaxConcurrency` per task, `OnTimeout: Drain` with `DrainTimeout`,
-  `ThreadsPerWorker`, and `MaxJobs` worker recycling.
+  `ThreadsPerWorker`, and worker recycling by `MaxJobs` and `MaxMemory`.
 - Graceful `Shutdown` for a pool or the whole runtime.
 - `Stats` for pools and tasks.
 - `async def` tasks, run on a persistent event loop per worker.

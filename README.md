@@ -232,6 +232,7 @@ search, err := search.Start(ctx, rt, search.Config{
 | `ThreadsPerWorker` | runtime, module | cores ÷ workers | sets `OMP_NUM_THREADS` and the BLAS thread variables |
 | `StartTimeout` | runtime, module | 60s | time for a worker to import the module |
 | `MaxJobs` | runtime, module | never | replace a worker after this many calls, bounding memory leaks |
+| `MaxMemory` | runtime, module | no limit | replace a worker whose resident memory passes this many bytes |
 | `MaxWorkers` | runtime | no cap | Python processes across all modules |
 | `Python`, `Dir`, `Env` | module | from `gothon.json` | interpreter, module directory, extra variables |
 | `Root`, `Logger` | runtime | nearest `gothon.json`, `slog.Default()` | project root; receives Python's output line by line |
@@ -252,6 +253,9 @@ When a Go handler calls Python on a request path:
   forcing a model reload.
 - **Cap slow tasks with `MaxConcurrency`** so they cannot starve fast tasks in the
   same module.
+- **Set `MaxMemory`** a little above a worker's normal size. Python seldom gives
+  memory back, so after one large call, or with a library that leaks, a worker
+  stays big; past the limit it finishes its call and is replaced.
 - **Shut down gracefully.** On SIGTERM (ECS and Kubernetes send it before
   stopping a container), call `rt.Shutdown(ctx)`: new calls fail with
   `ErrClosed`, calls in progress finish, then workers exit.
