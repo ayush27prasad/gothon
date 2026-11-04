@@ -442,11 +442,12 @@ func pointer(t string) string {
 }
 
 var initialisms = map[string]bool{
-	"api": true, "cpu": true, "css": true, "db": true, "dns": true, "gpu": true, "html": true,
-	"http": true, "https": true, "id": true, "ids": true, "io": true, "ip": true, "json": true,
-	"llm": true, "ml": true, "os": true, "pdf": true, "sql": true, "ssh": true, "tcp": true,
-	"tls": true, "ttl": true, "ui": true, "uid": true, "uri": true, "url": true, "urls": true,
-	"utc": true, "uuid": true, "xml": true,
+	"acl": true, "api": true, "ascii": true, "cpu": true, "css": true, "csv": true, "db": true,
+	"dns": true, "eof": true, "gpu": true, "html": true, "http": true, "https": true, "id": true,
+	"ids": true, "io": true, "ip": true, "json": true, "jwt": true, "llm": true, "ml": true,
+	"os": true, "pdf": true, "ram": true, "rpc": true, "sdk": true, "sql": true, "ssh": true,
+	"tcp": true, "tls": true, "tsv": true, "ttl": true, "udp": true, "ui": true, "uid": true,
+	"uri": true, "url": true, "urls": true, "utc": true, "uuid": true, "vm": true, "xml": true,
 }
 
 // goName converts snake_case, camelCase or arbitrary text to an exported Go identifier.
