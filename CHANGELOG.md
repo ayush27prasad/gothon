@@ -6,7 +6,7 @@ gothon follows [Semantic Versioning](https://semver.org). Releases are git tags
 After upgrading gothon, run `gothon gen`: generated clients record the version that
 produced them, and a stale client refuses to start.
 
-## Unreleased
+## [0.1.0] - 2026-11-05
 
 ### Added
 
@@ -30,3 +30,5 @@ produced them, and a stale client refuses to start.
 - Graceful `Shutdown` for a pool or the whole runtime.
 - `Stats` for pools and tasks, and `Hooks` for call and worker events.
 - `async def` tasks, run on a persistent event loop per worker.
+
+[0.1.0]: https://github.com/ayush27prasad/gothon/releases/tag/v0.1.0
